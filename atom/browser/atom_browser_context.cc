@@ -14,6 +14,7 @@
 #include "atom/browser/net/asar/asar_protocol_handler.h"
 #include "atom/browser/net/atom_cert_verifier.h"
 #include "atom/browser/net/atom_ct_delegate.h"
+#include "atom/browser/net/atom_host_resolver.h"
 #include "atom/browser/net/atom_network_delegate.h"
 #include "atom/browser/net/atom_ssl_config_service.h"
 #include "atom/browser/net/atom_url_request_job_factory.h"
@@ -196,6 +197,11 @@ content::PermissionManager* AtomBrowserContext::GetPermissionManager() {
 
 std::unique_ptr<net::CertVerifier> AtomBrowserContext::CreateCertVerifier() {
   return base::WrapUnique(new AtomCertVerifier(ct_delegate_.get()));
+}
+
+std::unique_ptr<net::HostResolver> AtomBrowserContext::CreateHostResolver() {
+  auto impl = brightray::BrowserContext::CreateHostResolver();
+  return base::WrapUnique(new AtomHostResolver(std::move(impl)));
 }
 
 net::SSLConfigService* AtomBrowserContext::CreateSSLConfigService() {

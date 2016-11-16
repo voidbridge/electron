@@ -71,6 +71,7 @@ class Session: public mate::TrackableObject<Session>,
   void EnableNetworkEmulation(const mate::Dictionary& options);
   void DisableNetworkEmulation();
   void SetCertVerifyProc(v8::Local<v8::Value> proc, mate::Arguments* args);
+  void SetHostResolveProc(v8::Local<v8::Value> proc, mate::Arguments* args);
   void SetPermissionRequestHandler(v8::Local<v8::Value> val,
                                    mate::Arguments* args);
   void ClearHostResolverCache(mate::Arguments* args);

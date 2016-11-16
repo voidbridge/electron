@@ -17,6 +17,7 @@
 #include "atom/browser/atom_permission_manager.h"
 #include "atom/browser/browser.h"
 #include "atom/browser/net/atom_cert_verifier.h"
+#include "atom/browser/net/atom_host_resolver.h"
 #include "atom/common/native_mate_converters/callback.h"
 #include "atom/common/native_mate_converters/content_converter.h"
 #include "atom/common/native_mate_converters/file_path_converter.h"
@@ -300,6 +301,14 @@ void SetCertVerifyProcInIO(
       SetVerifyProc(proc);
 }
 
+void SetHostResolveProcInIO(
+    const scoped_refptr<net::URLRequestContextGetter>& context_getter,
+    const AtomHostResolver::ResolveProc& proc) {
+  //auto request_context = context_getter->GetURLRequestContext();
+  //static_cast<AtomHostResolver*>(request_context->host_resolver())->
+  //    SetResolveProc(proc);
+}
+
 void ClearHostResolverCacheInIO(
     const scoped_refptr<net::URLRequestContextGetter>& context_getter,
     const base::Closure& callback) {
@@ -459,6 +468,20 @@ void Session::SetCertVerifyProc(v8::Local<v8::Value> val,
                  proc));
 }
 
+void Session::SetHostResolveProc(v8::Local<v8::Value> val,
+                                 mate::Arguments* args) {
+  AtomHostResolver::ResolveProc proc;
+  if (!(val->IsNull() || mate::ConvertFromV8(args->isolate(), val, &proc))) {
+    args->ThrowError("Must pass null or function");
+    return;
+  }
+
+  BrowserThread::PostTask(BrowserThread::IO, FROM_HERE,
+      base::Bind(&SetHostResolveProcInIO,
+                 make_scoped_refptr(browser_context_->GetRequestContext()),
+                 proc));
+}
+
 void Session::SetPermissionRequestHandler(v8::Local<v8::Value> val,
                                           mate::Arguments* args) {
   AtomPermissionManager::RequestHandler handler;
@@ -595,6 +618,7 @@ void Session::BuildPrototype(v8::Isolate* isolate,
       .SetMethod("enableNetworkEmulation", &Session::EnableNetworkEmulation)
       .SetMethod("disableNetworkEmulation", &Session::DisableNetworkEmulation)
       .SetMethod("setCertificateVerifyProc", &Session::SetCertVerifyProc)
+      .SetMethod("setHostResolveProc", &Session::SetHostResolveProc)
       .SetMethod("setPermissionRequestHandler",
                  &Session::SetPermissionRequestHandler)
       .SetMethod("clearHostResolverCache", &Session::ClearHostResolverCache)

@@ -240,6 +240,8 @@
       'atom/browser/net/atom_ct_delegate.h',
       'atom/browser/net/atom_cookie_delegate.cc',
       'atom/browser/net/atom_cookie_delegate.h',
+      'atom/browser/net/atom_host_resolver.cc',
+      'atom/browser/net/atom_host_resolver.h',
       'atom/browser/net/atom_network_delegate.cc',
       'atom/browser/net/atom_network_delegate.h',
       'atom/browser/net/atom_ssl_config_service.cc',
