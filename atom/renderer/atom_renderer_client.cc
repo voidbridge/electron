@@ -116,11 +116,6 @@ void AddRenderBindings(v8::Isolate* isolate,
       base::Bind(GetRenderProcessPreferences, preferences_manager));
 }
 
-bool IsDevToolsExtension(content::RenderFrame* render_frame) {
-  return static_cast<GURL>(render_frame->GetWebFrame()->document().url())
-      .SchemeIs("chrome-extension");
-}
-
 }  // namespace
 
 AtomRendererClient::AtomRendererClient()
@@ -253,8 +248,6 @@ void AtomRendererClient::DidCreateScriptContext(
     v8::Handle<v8::Context> context, content::RenderFrame* render_frame) {
   // Only allow node integration for the main frame, unless it is a devtools
   // extension page.
-  if (!render_frame->IsMainFrame() && !IsDevToolsExtension(render_frame))
-    return;
 
   // Whether the node binding has been initialized.
   bool first_time = node_bindings_->uv_env() == nullptr;
@@ -289,8 +282,6 @@ void AtomRendererClient::WillReleaseScriptContext(
     v8::Handle<v8::Context> context, content::RenderFrame* render_frame) {
   // Only allow node integration for the main frame, unless it is a devtools
   // extension page.
-  if (!render_frame->IsMainFrame() && !IsDevToolsExtension(render_frame))
-    return;
 
   node::Environment* env = node::Environment::GetCurrent(context);
   if (env)
