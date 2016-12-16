@@ -1004,6 +1004,12 @@ void NativeWindowMac::PreviewFile(const std::string& path,
   [window_ previewFileAtPath:path_ns withName:name_ns];
 }
 
+void NativeWindowMac::CloseFilePreview() {
+  if ([QLPreviewPanel sharedPreviewPanelExists]) {
+    [[QLPreviewPanel sharedPreviewPanel] close];
+  }
+}
+
 void NativeWindowMac::SetMovable(bool movable) {
   [window_ setMovable:movable];
 }
@@ -1247,6 +1253,10 @@ void NativeWindowMac::SetVisibleOnAllWorkspaces(bool visible) {
 bool NativeWindowMac::IsVisibleOnAllWorkspaces() {
   NSUInteger collectionBehavior = [window_ collectionBehavior];
   return collectionBehavior & NSWindowCollectionBehaviorCanJoinAllSpaces;
+}
+
+void NativeWindowMac::SetAutoHideCursor(bool auto_hide) {
+  [window_ setDisableAutoHideCursor:!auto_hide];
 }
 
 void NativeWindowMac::SetVibrancy(const std::string& type) {

@@ -9,11 +9,11 @@ const http = require('http')
 const {closeWindow} = require('./window-helpers')
 
 const {ipcRenderer, remote, screen} = require('electron')
-const {app, ipcMain, BrowserWindow, protocol} = remote
+const {app, ipcMain, BrowserWindow, protocol, webContents} = remote
 
 const isCI = remote.getGlobal('isCi')
 
-describe('browser-window module', function () {
+describe('BrowserWindow module', function () {
   var fixtures = path.resolve(__dirname, 'fixtures')
   var w = null
   var server, postData
@@ -133,10 +133,10 @@ describe('browser-window module', function () {
 
   describe('BrowserWindow.destroy()', function () {
     it('prevents users to access methods of webContents', function () {
-      var webContents = w.webContents
+      const contents = w.webContents
       w.destroy()
       assert.throws(function () {
-        webContents.getId()
+        contents.getId()
       }, /Object has been destroyed/)
     })
   })
@@ -211,7 +211,6 @@ describe('browser-window module', function () {
     })
 
     it('does not crash in did-fail-provisional-load handler', function (done) {
-      this.timeout(10000)
       w.webContents.once('did-fail-provisional-load', function () {
         w.loadURL('http://127.0.0.1:11111')
         done()
@@ -284,7 +283,6 @@ describe('browser-window module', function () {
     })
 
     it('emits when window is shown', function (done) {
-      this.timeout(10000)
       w.once('show', function () {
         assert.equal(w.isVisible(), true)
         done()
@@ -310,7 +308,6 @@ describe('browser-window module', function () {
     })
 
     it('emits when window is hidden', function (done) {
-      this.timeout(10000)
       w.show()
       w.once('hide', function () {
         assert.equal(w.isVisible(), false)
@@ -506,6 +503,23 @@ describe('browser-window module', function () {
     })
   })
 
+  describe('BrowserWindow.setAutoHideCursor(autoHide)', () => {
+    if (process.platform !== 'darwin') {
+      it('is not available on non-macOS platforms', () => {
+        assert.ok(!w.setAutoHideCursor)
+      })
+
+      return
+    }
+
+    it('allows changing cursor auto-hiding', () => {
+      assert.doesNotThrow(() => {
+        w.setAutoHideCursor(false)
+        w.setAutoHideCursor(true)
+      })
+    })
+  })
+
   describe('BrowserWindow.setVibrancy(type)', function () {
     it('allows setting, changing, and removing the vibrancy', function () {
       assert.doesNotThrow(function () {
@@ -518,9 +532,77 @@ describe('browser-window module', function () {
     })
   })
 
+  describe('BrowserWindow.setAppDetails(options)', function () {
+    it('supports setting the app details', function () {
+      if (process.platform !== 'win32') return
+
+      const iconPath = path.join(fixtures, 'assets', 'icon.ico')
+
+      assert.doesNotThrow(function () {
+        w.setAppDetails({appId: 'my.app.id'})
+        w.setAppDetails({appIconPath: iconPath, appIconIndex: 0})
+        w.setAppDetails({appIconPath: iconPath})
+        w.setAppDetails({relaunchCommand: 'my-app.exe arg1 arg2', relaunchDisplayName: 'My app name'})
+        w.setAppDetails({relaunchCommand: 'my-app.exe arg1 arg2'})
+        w.setAppDetails({relaunchDisplayName: 'My app name'})
+        w.setAppDetails({
+          appId: 'my.app.id',
+          appIconPath: iconPath,
+          appIconIndex: 0,
+          relaunchCommand: 'my-app.exe arg1 arg2',
+          relaunchDisplayName: 'My app name'
+        })
+        w.setAppDetails({})
+      })
+
+      assert.throws(function () {
+        w.setAppDetails()
+      }, /Insufficient number of arguments\./)
+    })
+  })
+
   describe('BrowserWindow.fromId(id)', function () {
     it('returns the window with id', function () {
       assert.equal(w.id, BrowserWindow.fromId(w.id).id)
+    })
+  })
+
+  describe('BrowserWindow.fromWebContents(webContents)', function () {
+    let contents = null
+
+    beforeEach(function () {
+      contents = webContents.create({})
+    })
+
+    afterEach(function () {
+      contents.destroy()
+    })
+
+    it('returns the window with the webContents', function () {
+      assert.equal(BrowserWindow.fromWebContents(w.webContents).id, w.id)
+      assert.equal(BrowserWindow.fromWebContents(contents), undefined)
+    })
+  })
+
+  describe('BrowserWindow.fromDevToolsWebContents(webContents)', function () {
+    let contents = null
+
+    beforeEach(function () {
+      contents = webContents.create({})
+    })
+
+    afterEach(function () {
+      contents.destroy()
+    })
+
+    it('returns the window with the webContents', function (done) {
+      w.webContents.once('devtools-opened', () => {
+        assert.equal(BrowserWindow.fromDevToolsWebContents(w.devToolsWebContents).id, w.id)
+        assert.equal(BrowserWindow.fromDevToolsWebContents(w.webContents), undefined)
+        assert.equal(BrowserWindow.fromDevToolsWebContents(contents), undefined)
+        done()
+      })
+      w.webContents.openDevTools()
     })
   })
 
@@ -628,7 +710,7 @@ describe('browser-window module', function () {
 
   describe('"zoomToPageWidth" option', function () {
     it('sets the window width to the page width when used', function () {
-      if (process.platform !== 'darwin') return this.skip()
+      if (process.platform !== 'darwin') return
 
       w.destroy()
       w = new BrowserWindow({
@@ -827,7 +909,7 @@ describe('browser-window module', function () {
               assert(/Blocked a frame with origin/.test(exceptionMessage))
 
               // FIXME this popup window should be closed in sandbox.html
-              closeWindow(popupWindow).then(() => {
+              closeWindow(popupWindow, {assertSingleWindow: false}).then(() => {
                 popupWindow = null
                 done()
               })
@@ -956,7 +1038,6 @@ describe('browser-window module', function () {
     })
 
     it('emits when link with target is called', function (done) {
-      this.timeout(10000)
       w.webContents.once('new-window', function (e, url, frameName) {
         e.preventDefault()
         assert.equal(url, 'http://host/')
@@ -973,7 +1054,6 @@ describe('browser-window module', function () {
     }
 
     it('emits when window is maximized', function (done) {
-      this.timeout(10000)
       w.once('maximize', function () {
         done()
       })
@@ -988,7 +1068,6 @@ describe('browser-window module', function () {
     }
 
     it('emits when window is unmaximized', function (done) {
-      this.timeout(10000)
       w.once('unmaximize', function () {
         done()
       })
@@ -1004,7 +1083,6 @@ describe('browser-window module', function () {
     }
 
     it('emits when window is minimized', function (done) {
-      this.timeout(10000)
       w.once('minimize', function () {
         done()
       })
@@ -1016,8 +1094,6 @@ describe('browser-window module', function () {
   describe('beginFrameSubscription method', function () {
     // This test is too slow, only test it on CI.
     if (!isCI) return
-
-    this.timeout(20000)
 
     it('subscribes to frame updates', function (done) {
       let called = false
@@ -1466,8 +1542,7 @@ describe('browser-window module', function () {
 
   describe('dev tool extensions', function () {
     describe('BrowserWindow.addDevToolsExtension', function () {
-      let showPanelIntevalId
-      this.timeout(10000)
+      let showPanelIntervalId
 
       beforeEach(function () {
         BrowserWindow.removeDevToolsExtension('foo')
@@ -1478,7 +1553,7 @@ describe('browser-window module', function () {
         assert.equal(BrowserWindow.getDevToolsExtensions().hasOwnProperty('foo'), true)
 
         w.webContents.on('devtools-opened', function () {
-          showPanelIntevalId = setInterval(function () {
+          showPanelIntervalId = setInterval(function () {
             if (w && w.devToolsWebContents) {
               var showLastPanel = function () {
                 var lastPanelId = WebInspector.inspectorView._tabbedPane._tabs.peekLast().id
@@ -1486,7 +1561,7 @@ describe('browser-window module', function () {
               }
               w.devToolsWebContents.executeJavaScript(`(${showLastPanel})()`)
             } else {
-              clearInterval(showPanelIntevalId)
+              clearInterval(showPanelIntervalId)
             }
           }, 100)
         })
@@ -1495,7 +1570,7 @@ describe('browser-window module', function () {
       })
 
       afterEach(function () {
-        clearInterval(showPanelIntevalId)
+        clearInterval(showPanelIntervalId)
       })
 
       it('throws errors for missing manifest.json files', function () {
@@ -1549,8 +1624,6 @@ describe('browser-window module', function () {
     })
 
     it('works when used with partitions', function (done) {
-      this.timeout(10000)
-
       if (w != null) {
         w.destroy()
       }
@@ -1565,8 +1638,10 @@ describe('browser-window module', function () {
       BrowserWindow.removeDevToolsExtension('foo')
       BrowserWindow.addDevToolsExtension(extensionPath)
 
-      w.webContents.on('devtools-opened', function () {
-        var showPanelIntevalId = setInterval(function () {
+      let showPanelIntervalId = null
+
+      w.webContents.once('devtools-opened', function () {
+        showPanelIntervalId = setInterval(function () {
           if (w && w.devToolsWebContents) {
             var showLastPanel = function () {
               var lastPanelId = WebInspector.inspectorView._tabbedPane._tabs.peekLast().id
@@ -1574,7 +1649,7 @@ describe('browser-window module', function () {
             }
             w.devToolsWebContents.executeJavaScript(`(${showLastPanel})()`)
           } else {
-            clearInterval(showPanelIntevalId)
+            clearInterval(showPanelIntervalId)
           }
         }, 100)
       })
@@ -1583,6 +1658,7 @@ describe('browser-window module', function () {
       w.webContents.openDevTools({mode: 'bottom'})
 
       ipcMain.once('answer', function (event, message) {
+        clearInterval(showPanelIntervalId)
         assert.equal(message.runtimeId, 'foo')
         done()
       })
@@ -1689,9 +1765,18 @@ describe('browser-window module', function () {
     })
   })
 
-  describe('offscreen rendering', function () {
-    this.timeout(10000)
+  describe('previewFile', function () {
+    it('opens the path in Quick Look on macOS', function () {
+      if (process.platform !== 'darwin') return
 
+      assert.doesNotThrow(function () {
+        w.previewFile(__filename)
+        w.closeFilePreview()
+      })
+    })
+  })
+
+  describe('offscreen rendering', function () {
     beforeEach(function () {
       if (w != null) w.destroy()
       w = new BrowserWindow({

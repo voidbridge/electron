@@ -9,6 +9,8 @@ const {closeWindow} = require('./window-helpers')
 const {remote} = require('electron')
 const {app, BrowserWindow, crashReporter} = remote.require('electron')
 
+const isCI = remote.getGlobal('isCi')
+
 describe('crashReporter module', function () {
   var fixtures = path.resolve(__dirname, 'fixtures')
   var w = null
@@ -33,12 +35,9 @@ describe('crashReporter module', function () {
     return
   }
 
-  var isCI = remote.getGlobal('isCi')
-  if (isCI) {
-    return
-  }
-
   it('should send minidump when renderer crashes', function (done) {
+    if (isCI) return done()
+
     this.timeout(120000)
 
     var called = false
@@ -115,6 +114,27 @@ describe('crashReporter module', function () {
           submitURL: 'http://127.0.0.1/more-crashes'
         })
       })
+    })
+  })
+
+  describe('.get/setUploadToServer', function () {
+    it('throws an error when called from the renderer process', function () {
+      assert.throws(() => require('electron').crashReporter.getUploadToServer())
+    })
+
+    it('can be read/set from the main process', function () {
+      if (process.platform === 'darwin') {
+        crashReporter.start({
+          companyName: 'Umbrella Corporation',
+          submitURL: 'http://127.0.0.1/crashes',
+          autoSubmit: true
+        })
+        assert.equal(crashReporter.getUploadToServer(), true)
+        crashReporter.setUploadToServer(false)
+        assert.equal(crashReporter.getUploadToServer(), false)
+      } else {
+        assert.equal(crashReporter.getUploadToServer(), true)
+      }
     })
   })
 })

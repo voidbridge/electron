@@ -34,6 +34,7 @@
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/download_manager_delegate.h"
 #include "content/public/browser/storage_partition.h"
 #include "native_mate/dictionary.h"
 #include "native_mate/object_template_builder.h"
@@ -59,6 +60,15 @@ struct ClearStorageDataOptions {
   GURL origin;
   uint32_t storage_types = StoragePartition::REMOVE_DATA_MASK_ALL;
   uint32_t quota_types = StoragePartition::QUOTA_MANAGED_STORAGE_MASK_ALL;
+};
+
+struct ClearAuthCacheOptions {
+  std::string type;
+  GURL origin;
+  std::string realm;
+  base::string16 username;
+  base::string16 password;
+  net::HttpAuth::Scheme auth_scheme;
 };
 
 uint32_t GetStorageMask(const std::vector<std::string>& storage_types) {
@@ -99,6 +109,18 @@ uint32_t GetQuotaMask(const std::vector<std::string>& quota_types) {
   return quota_mask;
 }
 
+net::HttpAuth::Scheme GetAuthSchemeFromString(const std::string& scheme) {
+  if (scheme == "basic")
+    return net::HttpAuth::AUTH_SCHEME_BASIC;
+  if (scheme == "digest")
+    return net::HttpAuth::AUTH_SCHEME_DIGEST;
+  if (scheme == "ntlm")
+    return net::HttpAuth::AUTH_SCHEME_NTLM;
+  if (scheme == "negotiate")
+    return net::HttpAuth::AUTH_SCHEME_NEGOTIATE;
+  return net::HttpAuth::AUTH_SCHEME_MAX;
+}
+
 void SetUserAgentInIO(scoped_refptr<net::URLRequestContextGetter> getter,
                       const std::string& accept_lang,
                       const std::string& user_agent) {
@@ -130,7 +152,27 @@ struct Converter<ClearStorageDataOptions> {
   }
 };
 
-template<>
+template <>
+struct Converter<ClearAuthCacheOptions> {
+  static bool FromV8(v8::Isolate* isolate,
+                     v8::Local<v8::Value> val,
+                     ClearAuthCacheOptions* out) {
+    mate::Dictionary options;
+    if (!ConvertFromV8(isolate, val, &options))
+      return false;
+    options.Get("type", &out->type);
+    options.Get("origin", &out->origin);
+    options.Get("realm", &out->realm);
+    options.Get("username", &out->username);
+    options.Get("password", &out->password);
+    std::string scheme;
+    if (options.Get("scheme", &scheme))
+      out->auth_scheme = GetAuthSchemeFromString(scheme);
+    return true;
+  }
+};
+
+template <>
 struct Converter<net::ProxyConfig> {
   static bool FromV8(v8::Isolate* isolate,
                      v8::Local<v8::Value> val,
@@ -313,6 +355,33 @@ void ClearHostResolverCacheInIO(
   }
 }
 
+void ClearAuthCacheInIO(
+    const scoped_refptr<net::URLRequestContextGetter>& context_getter,
+    const ClearAuthCacheOptions& options,
+    const base::Closure& callback) {
+  auto request_context = context_getter->GetURLRequestContext();
+  auto network_session =
+      request_context->http_transaction_factory()->GetSession();
+  if (network_session) {
+    if (options.type == "password") {
+      auto auth_cache = network_session->http_auth_cache();
+      if (!options.origin.is_empty()) {
+        auth_cache->Remove(
+            options.origin, options.realm, options.auth_scheme,
+            net::AuthCredentials(options.username, options.password));
+      } else {
+        auth_cache->Clear();
+      }
+    } else if (options.type == "clientCertificate") {
+      auto client_auth_cache = network_session->ssl_client_auth_cache();
+      client_auth_cache->Remove(net::HostPortPair::FromURL(options.origin));
+    }
+    network_session->CloseAllConnections();
+  }
+  if (!callback.is_null())
+    RunCallbackInUI(callback);
+}
+
 void AllowNTLMCredentialsForDomainsInIO(
     const scoped_refptr<net::URLRequestContextGetter>& context_getter,
     const std::string& domains) {
@@ -329,6 +398,25 @@ void AllowNTLMCredentialsForDomainsInIO(
 void OnClearStorageDataDone(const base::Closure& callback) {
   if (!callback.is_null())
     callback.Run();
+}
+
+void DownloadIdCallback(content::DownloadManager* download_manager,
+                        const base::FilePath& path,
+                        const std::vector<GURL>& url_chain,
+                        const std::string& mime_type,
+                        int64_t offset,
+                        int64_t length,
+                        const std::string& last_modified,
+                        const std::string& etag,
+                        const base::Time& start_time,
+                        uint32_t id) {
+  download_manager->CreateDownloadItem(
+      base::GenerateGUID(), id, path, path, url_chain, GURL(), GURL(), GURL(),
+      GURL(), mime_type, mime_type, start_time, base::Time(), etag,
+      last_modified, offset, length, std::string(),
+      content::DownloadItem::INTERRUPTED,
+      content::DownloadDangerType::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
+      content::DOWNLOAD_INTERRUPT_REASON_NETWORK_TIMEOUT, false);
 }
 
 }  // namespace
@@ -357,10 +445,10 @@ void Session::OnDownloadCreated(content::DownloadManager* manager,
 
   v8::Locker locker(isolate());
   v8::HandleScope handle_scope(isolate());
-  bool prevent_default = Emit(
-      "will-download",
-      DownloadItem::Create(isolate(), item),
-      item->GetWebContents());
+  auto handle = DownloadItem::Create(isolate(), item);
+  if (item->GetState() == content::DownloadItem::INTERRUPTED)
+    handle->SetSavePath(item->GetTargetFilePath());
+  bool prevent_default = Emit("will-download", handle, item->GetWebContents());
   if (prevent_default) {
     item->Cancel(true);
     item->Remove();
@@ -481,6 +569,22 @@ void Session::ClearHostResolverCache(mate::Arguments* args) {
                  callback));
 }
 
+void Session::ClearAuthCache(mate::Arguments* args) {
+  ClearAuthCacheOptions options;
+  if (!args->GetNext(&options)) {
+    args->ThrowError("Must specify options object");
+    return;
+  }
+  base::Closure callback;
+  args->GetNext(&callback);
+
+  BrowserThread::PostTask(
+      BrowserThread::IO, FROM_HERE,
+      base::Bind(&ClearAuthCacheInIO,
+                 make_scoped_refptr(browser_context_->GetRequestContext()),
+                 options, callback));
+}
+
 void Session::AllowNTLMCredentialsForDomains(const std::string& domains) {
   BrowserThread::PostTask(BrowserThread::IO, FROM_HERE,
       base::Bind(&AllowNTLMCredentialsForDomainsInIO,
@@ -518,6 +622,37 @@ void Session::GetBlobData(
                  base::Unretained(blob_reader),
                  uuid,
                  callback));
+}
+
+void Session::CreateInterruptedDownload(const mate::Dictionary& options) {
+  int64_t offset = 0, length = 0;
+  double start_time = 0.0;
+  std::string mime_type, last_modified, etag;
+  base::FilePath path;
+  std::vector<GURL> url_chain;
+  options.Get("path", &path);
+  options.Get("urlChain", &url_chain);
+  options.Get("mimeType", &mime_type);
+  options.Get("offset", &offset);
+  options.Get("length", &length);
+  options.Get("lastModified", &last_modified);
+  options.Get("eTag", &etag);
+  options.Get("startTime", &start_time);
+  if (path.empty() || url_chain.empty() || length == 0) {
+    isolate()->ThrowException(v8::Exception::Error(mate::StringToV8(
+        isolate(), "Must pass non-empty path, urlChain and length.")));
+    return;
+  }
+  if (offset >= length) {
+    isolate()->ThrowException(v8::Exception::Error(mate::StringToV8(
+        isolate(), "Must pass an offset value less than length.")));
+    return;
+  }
+  auto download_manager =
+      content::BrowserContext::GetDownloadManager(browser_context());
+  download_manager->GetDelegate()->GetNextId(base::Bind(
+      &DownloadIdCallback, download_manager, path, url_chain, mime_type, offset,
+      length, last_modified, etag, base::Time::FromDoubleT(start_time)));
 }
 
 v8::Local<v8::Value> Session::Cookies(v8::Isolate* isolate) {
@@ -598,11 +733,14 @@ void Session::BuildPrototype(v8::Isolate* isolate,
       .SetMethod("setPermissionRequestHandler",
                  &Session::SetPermissionRequestHandler)
       .SetMethod("clearHostResolverCache", &Session::ClearHostResolverCache)
+      .SetMethod("clearAuthCache", &Session::ClearAuthCache)
       .SetMethod("allowNTLMCredentialsForDomains",
                  &Session::AllowNTLMCredentialsForDomains)
       .SetMethod("setUserAgent", &Session::SetUserAgent)
       .SetMethod("getUserAgent", &Session::GetUserAgent)
       .SetMethod("getBlobData", &Session::GetBlobData)
+      .SetMethod("createInterruptedDownload",
+                 &Session::CreateInterruptedDownload)
       .SetProperty("cookies", &Session::Cookies)
       .SetProperty("protocol", &Session::Protocol)
       .SetProperty("webRequest", &Session::WebRequest);

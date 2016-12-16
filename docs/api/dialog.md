@@ -41,6 +41,8 @@ The `dialog` module has the following methods:
 Returns `String[]`, an array of file paths chosen by the user,
 if the callback is provided it returns `undefined`.
 
+The `browserWindow` argument allows the dialog to attach itself to a parent window, making it modal.
+
 The `filters` specifies an array of file types that can be displayed or
 selected when you want to limit the user to a specific type. For example:
 
@@ -82,6 +84,8 @@ shown.
 Returns `String`, the path of the file chosen by the user,
 if a callback is provided it returns `undefined`.
 
+The `browserWindow` argument allows the dialog to attach itself to a parent window, making it modal.
+
 The `filters` specifies an array of file types that can be displayed, see
 `dialog.showOpenDialog` for an example.
 
@@ -106,8 +110,8 @@ will be passed via `callback(filename)`
   * `cancelId` Integer (optional) - The value will be returned when user cancels the dialog
     instead of clicking the buttons of the dialog. By default it is the index
     of the buttons that have "cancel" or "no" as label, or 0 if there is no such
-    buttons. On macOS and Windows the index of "Cancel" button will always be
-    used as `cancelId`, not matter whether it is already specified.
+    buttons. On macOS and Windows the index of the "Cancel" button will always
+    be used as `cancelId` even if it is specified.
   * `noLink` Boolean (optional) - On Windows Electron will try to figure out which one of
     the `buttons` are common buttons (like "Cancel" or "Yes"), and show the
     others as command links in the dialog. This can make the dialog appear in
@@ -121,6 +125,8 @@ it returns undefined.
 
 Shows a message box, it will block the process until the message box is closed.
 It returns the index of the clicked button.
+
+The `browserWindow` argument allows the dialog to attach itself to a parent window, making it modal.
 
 If a `callback` is passed, the API call will be asynchronous and the result
 will be passed via `callback(response)`.
