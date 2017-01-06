@@ -69,6 +69,10 @@ void WebFrame::SetName(const std::string& name) {
   web_frame_->setName(blink::WebString::fromUTF8(name));
 }
 
+std::string WebFrame::GetUniqueName() {
+  return web_frame_->uniqueName().utf8();
+}
+
 double WebFrame::SetZoomLevel(double level) {
   double ret = web_frame_->view()->setZoomLevel(level);
   mate::EmitEvent(isolate(), GetWrapper(), "zoom-level-changed", ret);
@@ -221,12 +225,17 @@ void WebFrame::ClearCache(v8::Isolate* isolate) {
     base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_CRITICAL);
 }
 
+bool WebFrame::IsMainFrame() {
+  return content::RenderFrame::FromWebFrame(web_frame_)->IsMainFrame();
+}
+
 // static
 void WebFrame::BuildPrototype(
     v8::Isolate* isolate, v8::Local<v8::FunctionTemplate> prototype) {
   prototype->SetClassName(mate::StringToV8(isolate, "WebFrame"));
   mate::ObjectTemplateBuilder(isolate, prototype->PrototypeTemplate())
       .SetMethod("setName", &WebFrame::SetName)
+      .SetMethod("getUniqueName", &WebFrame::GetUniqueName)
       .SetMethod("setZoomLevel", &WebFrame::SetZoomLevel)
       .SetMethod("getZoomLevel", &WebFrame::GetZoomLevel)
       .SetMethod("setZoomFactor", &WebFrame::SetZoomFactor)
@@ -253,7 +262,8 @@ void WebFrame::BuildPrototype(
       .SetMethod("getResourceUsage", &WebFrame::GetResourceUsage)
       .SetMethod("clearCache", &WebFrame::ClearCache)
       // TODO(kevinsawicki): Remove in 2.0, deprecate before then with warnings
-      .SetMethod("setZoomLevelLimits", &WebFrame::SetVisualZoomLevelLimits);
+      .SetMethod("setZoomLevelLimits", &WebFrame::SetVisualZoomLevelLimits)
+      .SetProperty("mainFrame", &WebFrame::IsMainFrame);
 }
 
 }  // namespace api

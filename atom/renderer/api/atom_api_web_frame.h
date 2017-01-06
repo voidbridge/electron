@@ -40,6 +40,8 @@ class WebFrame : public mate::Wrappable<WebFrame> {
 
   void SetName(const std::string& name);
 
+  std::string GetUniqueName();
+
   double SetZoomLevel(double level);
   double GetZoomLevel() const;
   double SetZoomFactor(double factor);
@@ -76,6 +78,8 @@ class WebFrame : public mate::Wrappable<WebFrame> {
   // Resource related methods
   blink::WebCache::ResourceTypeStats GetResourceUsage(v8::Isolate* isolate);
   void ClearCache(v8::Isolate* isolate);
+
+  bool IsMainFrame();
 
   std::unique_ptr<SpellCheckClient> spell_check_client_;
 
