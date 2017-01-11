@@ -2,7 +2,7 @@
 
 > Render and control web pages.
 
-Process: [Main](../tutorial/quick-start.md#main-process)
+Process: [Main](../glossary.md#main-process)
 
 `webContents` is an
 [EventEmitter](https://nodejs.org/api/events.html#events_class_eventemitter).
@@ -49,7 +49,7 @@ Returns `WebContents` - A WebContents instance with the given ID.
 
 > Render and control the contents of a BrowserWindow instance.
 
-Process: [Main](../tutorial/quick-start.md#main-process)
+Process: [Main](../glossary.md#main-process)
 
 ### Instance Events
 
@@ -232,6 +232,24 @@ Emitted when a plugin process has crashed.
 
 Emitted when `webContents` is destroyed.
 
+#### Event: 'before-input-event'
+
+Returns:
+
+* `event` Event
+* `input` Object - Input properties
+  * `type` String - Either `keyUp` or `keyDown`
+  * `key` String - Equivalent to [KeyboardEvent.key](keyboardevent)
+  * `isAutoRepeat` Boolean - Equivalent to [KeyboardEvent.repeat](keyboardevent)
+  * `shift` Boolean - Equivalent to [KeyboardEvent.shiftKey](keyboardevent)
+  * `control` Boolean - Equivalent to [KeyboardEvent.controlKey](keyboardevent)
+  * `alt` Boolean - Equivalent to [KeyboardEvent.altKey](keyboardevent)
+  * `meta` Boolean - Equivalent to [KeyboardEvent.metaKey](keyboardevent)
+
+Emitted before dispatching the `keydown` and `keyup` events in the page.
+Calling `event.preventDefault` will prevent the page `keydown`/`keyup` events
+from being dispatched.
+
 #### Event: 'devtools-opened'
 
 Emitted when DevTools is opened.
@@ -249,7 +267,7 @@ Emitted when DevTools is focused / opened.
 Returns:
 
 * `event` Event
-* `url` URL
+* `url` String
 * `error` String - The error code
 * `certificate` [Certificate](structures/certificate.md)
 * `callback` Function
@@ -489,7 +507,7 @@ Emitted when the devtools window instructs the webContents to reload
 
 #### `contents.loadURL(url[, options])`
 
-* `url` URL
+* `url` String
 * `options` Object (optional)
   * `httpReferrer` String (optional) - A HTTP Referrer url.
   * `userAgent` String (optional) - A user agent originating the request.
@@ -777,14 +795,14 @@ Inserts `text` to the focused element.
 
 * `text` String - Content to be searched, must not be empty.
 * `options` Object (optional)
-  * `forward` Boolean - Whether to search forward or backward, defaults to `true`.
-  * `findNext` Boolean - Whether the operation is first request or a follow up,
+  * `forward` Boolean - (optional) Whether to search forward or backward, defaults to `true`.
+  * `findNext` Boolean - (optional) Whether the operation is first request or a follow up,
     defaults to `false`.
-  * `matchCase` Boolean - Whether search should be case-sensitive,
+  * `matchCase` Boolean - (optional) Whether search should be case-sensitive,
     defaults to `false`.
-  * `wordStart` Boolean - Whether to look only at the start of words.
+  * `wordStart` Boolean - (optional) Whether to look only at the start of words.
     defaults to `false`.
-  * `medialCapitalAsWordStart` Boolean - When combined with `wordStart`,
+  * `medialCapitalAsWordStart` Boolean - (optional) When combined with `wordStart`,
     accepts a match in the middle of a word if the match begins with an
     uppercase letter followed by a lowercase or non-letter.
     Accepts several other intra-word matches, defaults to `false`.
@@ -860,14 +878,14 @@ Use `page-break-before: always; ` CSS style to force to print to a new page.
 #### `contents.printToPDF(options, callback)`
 
 * `options` Object
-  * `marginsType` Integer - Specifies the type of margins to use. Uses 0 for
+  * `marginsType` Integer - (optional) Specifies the type of margins to use. Uses 0 for
     default margin, 1 for no margin, and 2 for minimum margin.
-  * `pageSize` String - Specify page size of the generated PDF. Can be `A3`,
+  * `pageSize` String - (optional) Specify page size of the generated PDF. Can be `A3`,
     `A4`, `A5`, `Legal`, `Letter`, `Tabloid` or an Object containing `height`
     and `width` in microns.
-  * `printBackground` Boolean - Whether to print CSS backgrounds.
-  * `printSelectionOnly` Boolean - Whether to print selection only.
-  * `landscape` Boolean - `true` for landscape, `false` for portrait.
+  * `printBackground` Boolean - (optional) Whether to print CSS backgrounds.
+  * `printSelectionOnly` Boolean - (optional) Whether to print selection only.
+  * `landscape` Boolean - (optional) `true` for landscape, `false` for portrait.
 * `callback` Function
   * `error` Error
   * `data` Buffer
@@ -1217,3 +1235,5 @@ when the DevTools has been closed.
 #### `contents.debugger`
 
 A [Debugger](debugger.md) instance for this webContents.
+
+[keyboardevent]: https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent

@@ -69,6 +69,13 @@ nativeImage.toPNG()
 nativeImage.toJpeg()
 // Replace with
 nativeImage.toJPEG()
+
+// Deprecated
+nativeImage.createFromBuffer(buffer, 1.0)
+// Replace with
+nativeImage.createFromBuffer(buffer, {
+  scaleFactor: 1.0
+})
 ```
 
 ## `process`
@@ -117,6 +124,16 @@ webContents.setVisualZoomLevelLimits(1, 2)
 webFrame.setZoomLevelLimits(1, 2)
 // Replace with
 webFrame.setVisualZoomLevelLimits(1, 2)
+
+// Deprecated
+webFrame.registerURLSchemeAsSecure('app')
+// Replace with
+protocol.registerStandardSchemes(['app'], {secure: true})
+
+// Deprecated
+webFrame.registerURLSchemeAsPrivileged('app', {secure: true})
+// Replace with
+protocol.registerStandardSchemes(['app'], {secure: true})
 ```
 
 ## `<webview>`

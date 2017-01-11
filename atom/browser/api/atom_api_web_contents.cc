@@ -439,6 +439,11 @@ content::WebContents* WebContents::OpenURLFromTab(
   if (Emit("will-navigate", params.url))
     return nullptr;
 
+  // Don't load the URL if the web contents was marked as destroyed from a
+  // will-navigate event listener
+  if (IsDestroyed())
+    return nullptr;
+
   return CommonWebContentsDelegate::OpenURLFromTab(source, params);
 }
 
@@ -486,6 +491,17 @@ void WebContents::HandleKeyboardEvent(
     // Go to the default keyboard handling.
     CommonWebContentsDelegate::HandleKeyboardEvent(source, event);
   }
+}
+
+bool WebContents::PreHandleKeyboardEvent(
+    content::WebContents* source,
+    const content::NativeWebKeyboardEvent& event,
+    bool* is_keyboard_shortcut) {
+  if (event.type == blink::WebInputEvent::Type::RawKeyDown
+      || event.type == blink::WebInputEvent::Type::KeyUp)
+    return Emit("before-input-event", event);
+  else
+    return false;
 }
 
 void WebContents::EnterFullscreenModeForTab(content::WebContents* source,
@@ -595,6 +611,14 @@ std::unique_ptr<content::BluetoothChooser> WebContents::RunBluetoothChooser(
 void WebContents::BeforeUnloadFired(const base::TimeTicks& proceed_time) {
   // Do nothing, we override this method just to avoid compilation error since
   // there are two virtual functions named BeforeUnloadFired.
+}
+
+void WebContents::RenderViewCreated(content::RenderViewHost* render_view_host) {
+  const auto impl = content::RenderWidgetHostImpl::FromID(
+      render_view_host->GetProcess()->GetID(),
+      render_view_host->GetRoutingID());
+  if (impl)
+    impl->disable_hidden_ = !background_throttling_;
 }
 
 void WebContents::RenderViewDeleted(content::RenderViewHost* render_view_host) {
@@ -881,11 +905,6 @@ void WebContents::LoadURL(const GURL& url, const mate::Dictionary& options) {
   } else {
     view->SetBackgroundColor(SK_ColorTRANSPARENT);
   }
-
-  // For the same reason we can only disable hidden here.
-  const auto host = static_cast<content::RenderWidgetHostImpl*>(
-      view->GetRenderWidgetHost());
-  host->disable_hidden_ = !background_throttling_;
 }
 
 void WebContents::DownloadURL(const GURL& url) {

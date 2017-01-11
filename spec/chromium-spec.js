@@ -3,7 +3,8 @@ const http = require('http')
 const path = require('path')
 const ws = require('ws')
 const url = require('url')
-const remote = require('electron').remote
+const {ipcRenderer, remote} = require('electron')
+const {closeWindow} = require('./window-helpers')
 
 const {BrowserWindow, ipcMain, protocol, session, webContents} = remote
 
@@ -45,7 +46,7 @@ describe('chromium feature', function () {
     var w = null
 
     afterEach(function () {
-      w != null ? w.destroy() : void 0
+      return closeWindow(w).then(function () { w = null })
     })
 
     it('is set correctly when window is not shown', function (done) {
@@ -109,6 +110,40 @@ describe('chromium feature', function () {
         }
       }).catch(done)
     })
+
+    it('can return new device id when cookie storage is cleared', function (done) {
+      const options = {
+        origin: null,
+        storages: ['cookies']
+      }
+      const deviceIds = []
+      const ses = session.fromPartition('persist:media-device-id')
+      let w = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          session: ses
+        }
+      })
+      w.webContents.on('ipc-message', function (event, args) {
+        if (args[0] === 'deviceIds') {
+          deviceIds.push(args[1])
+        }
+        if (deviceIds.length === 2) {
+          assert.notDeepEqual(deviceIds[0], deviceIds[1])
+          closeWindow(w).then(function () {
+            w = null
+            done()
+          }).catch(function (error) {
+            done(error)
+          })
+        } else {
+          ses.clearStorageData(options, function () {
+            w.webContents.reload()
+          })
+        }
+      })
+      w.loadURL('file://' + fixtures + '/pages/media-id-reset.html')
+    })
   })
 
   describe('navigator.language', function () {
@@ -122,7 +157,7 @@ describe('chromium feature', function () {
     var w = null
 
     afterEach(function () {
-      w != null ? w.destroy() : void 0
+      return closeWindow(w).then(function () { w = null })
     })
 
     it('should register for file scheme', function (done) {
@@ -151,6 +186,12 @@ describe('chromium feature', function () {
     if (process.env.TRAVIS === 'true' && process.platform === 'darwin') {
       return
     }
+
+    let w = null
+
+    afterEach(() => {
+      return closeWindow(w).then(function () { w = null })
+    })
 
     it('returns a BrowserWindowProxy object', function () {
       var b = window.open('about:blank', '', 'show=no')
@@ -225,6 +266,28 @@ describe('chromium feature', function () {
       b = window.open('file://' + fixtures + '/pages/window-open-size.html', '', 'show=no,width=' + size.width + ',height=' + size.height)
     })
 
+    it('handles cycles when merging the parent options into the child options', (done) => {
+      w = BrowserWindow.fromId(ipcRenderer.sendSync('create-window-with-options-cycle'))
+      w.loadURL('file://' + fixtures + '/pages/window-open.html')
+      w.webContents.once('new-window', (event, url, frameName, disposition, options) => {
+        assert.equal(options.show, false)
+        assert.deepEqual(options.foo, {
+          bar: null,
+          baz: {
+            hello: {
+              world: true
+            }
+          },
+          baz2: {
+            hello: {
+              world: true
+            }
+          }
+        })
+        done()
+      })
+    })
+
     it('defines a window.location getter', function (done) {
       var b, targetURL
       if (process.platform === 'win32') {
@@ -277,7 +340,7 @@ describe('chromium feature', function () {
     let w = null
 
     afterEach(function () {
-      if (w) w.destroy()
+      return closeWindow(w).then(function () { w = null })
     })
 
     it('is null for main window', function (done) {

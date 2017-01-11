@@ -626,7 +626,7 @@ NativeWindowMac::NativeWindowMac(
   options.Get(options::kWidth, &width);
   options.Get(options::kHeight, &height);
 
-  NSRect main_screen_rect = [[[NSScreen screens] objectAtIndex:0] frame];
+  NSRect main_screen_rect = [[[NSScreen screens] firstObject] frame];
   NSRect cocoa_bounds = NSMakeRect(
       round((NSWidth(main_screen_rect) - width) / 2) ,
       round((NSHeight(main_screen_rect) - height) / 2),
@@ -937,7 +937,7 @@ void NativeWindowMac::SetBounds(const gfx::Rect& bounds, bool animate) {
 
   NSRect cocoa_bounds = NSMakeRect(bounds.x(), 0, size.width(), size.height());
   // Flip coordinates based on the primary screen.
-  NSScreen* screen = [[NSScreen screens] objectAtIndex:0];
+  NSScreen* screen = [[NSScreen screens] firstObject];
   cocoa_bounds.origin.y =
       NSHeight([screen frame]) - size.height() - bounds.y();
 
@@ -947,7 +947,7 @@ void NativeWindowMac::SetBounds(const gfx::Rect& bounds, bool animate) {
 gfx::Rect NativeWindowMac::GetBounds() {
   NSRect frame = [window_ frame];
   gfx::Rect bounds(frame.origin.x, 0, NSWidth(frame), NSHeight(frame));
-  NSScreen* screen = [[NSScreen screens] objectAtIndex:0];
+  NSScreen* screen = [[NSScreen screens] firstObject];
   bounds.set_y(NSHeight([screen frame]) - NSMaxY(frame));
   return bounds;
 }
@@ -1073,6 +1073,7 @@ void NativeWindowMac::SetAlwaysOnTop(bool top, const std::string& level) {
     } else if (level == "screen-saver") {
       windowLevel = NSScreenSaverWindowLevel;
     } else if (level == "dock") {
+      // Deprecated by macOS, but kept for backwards compatibility
       windowLevel = NSDockWindowLevel;
     }
   }
@@ -1401,10 +1402,10 @@ void NativeWindowMac::ShowWindowButton(NSWindowButton button) {
 }
 
 void NativeWindowMac::InstallView() {
-  // Make sure the bottom corner is rounded: http://crbug.com/396264.
+  // Make sure the bottom corner is rounded for non-modal windows: http://crbug.com/396264.
   // But do not enable it on OS X 10.9 for transparent window, otherwise a
   // semi-transparent frame would show.
-  if (!(transparent() && base::mac::IsOSMavericks()))
+  if (!(transparent() && base::mac::IsOSMavericks()) && !is_modal())
     [[window_ contentView] setWantsLayer:YES];
 
   NSView* view = inspectable_web_contents()->GetView()->GetNativeView();

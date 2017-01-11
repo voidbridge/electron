@@ -267,6 +267,16 @@ describe('BrowserWindow module', function () {
     })
   })
 
+  describe('will-navigate event', function () {
+    it('allows the window to be closed from the event listener', (done) => {
+      ipcRenderer.send('close-on-will-navigate', w.id)
+      ipcRenderer.once('closed-on-will-navigate', () => {
+        done()
+      })
+      w.loadURL('file://' + fixtures + '/pages/will-navigate.html')
+    })
+  })
+
   describe('BrowserWindow.show()', function () {
     if (isCI) {
       return
@@ -494,7 +504,7 @@ describe('BrowserWindow module', function () {
   describe('BrowserWindow.setAlwaysOnTop(flag, level)', function () {
     it('sets the window as always on top', function () {
       assert.equal(w.isAlwaysOnTop(), false)
-      w.setAlwaysOnTop(true, 'dock')
+      w.setAlwaysOnTop(true, 'screen-saver')
       assert.equal(w.isAlwaysOnTop(), true)
       w.setAlwaysOnTop(false)
       assert.equal(w.isAlwaysOnTop(), false)
@@ -982,6 +992,26 @@ describe('BrowserWindow module', function () {
           w.loadURL('file://' + path.join(fixtures, 'api', 'sandbox.html?webcontents-events'))
         })
       })
+
+      it('can print to PDF', function (done) {
+        w.destroy()
+        w = new BrowserWindow({
+          show: false,
+          webPreferences: {
+            sandbox: true,
+            preload: preload
+          }
+        })
+        w.loadURL('data:text/html,%3Ch1%3EHello%2C%20World!%3C%2Fh1%3E')
+        w.webContents.once('did-finish-load', function () {
+          w.webContents.printToPDF({}, function (error, data) {
+            assert.equal(error, null)
+            assert.equal(data instanceof Buffer, true)
+            assert.notEqual(data.length, 0)
+            done()
+          })
+        })
+      })
     })
   })
 
@@ -1227,6 +1257,18 @@ describe('BrowserWindow module', function () {
         assert.equal(w.isResizable(), false)
         w.setResizable(true)
         assert.equal(w.isResizable(), true)
+      })
+
+      it('works for a frameless window', () => {
+        w.destroy()
+        w = new BrowserWindow({show: false, frame: false})
+        assert.equal(w.isResizable(), true)
+
+        if (process.platform === 'win32') {
+          w.destroy()
+          w = new BrowserWindow({show: false, thickFrame: false})
+          assert.equal(w.isResizable(), false)
+        }
       })
     })
 

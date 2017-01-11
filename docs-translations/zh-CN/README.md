@@ -4,12 +4,13 @@
 
 ## 常见问题
 
-这里是一些被经常问到的问题，再提 issue 之前请先看一下这里。
+这里是一些被经常问到的问题，在提 issue 之前请先看一下这里。
 
-+ [Electron 常见问题](faq/electron-faq.md) 需要更新
++ [Electron 常见问题](faq/electron-faq.md)
 
 ## 向导
 
+* [术语表](glossary.md)
 * [支持平台](tutorial/supported-platforms.md)
 * [安全性](tutorial/security.md) 未翻译
 * [Electron 版本管理](tutorial/electron-versioning.md) 未翻译
@@ -43,7 +44,7 @@
 ### 自定义的 DOM 元素:
 
 * [`File` 对象](api/file-object.md)
-* [`<webview>` 标签](api/web-view-tag.md)
+* [`<webview>` 标签](api/webview-tag.md)
 * [`window.open` 函数](api/window-open.md)
 
 ### 在主进程内可用的模块:
@@ -57,11 +58,12 @@
 * [ipcMain](api/ipc-main.md)
 * [Menu](api/menu.md)
 * [MenuItem](api/menu-item.md)
+* [net](api/net.md)
 * [powerMonitor](api/power-monitor.md)
 * [powerSaveBlocker](api/power-save-blocker.md)
 * [protocol](api/protocol.md)
 * [session](api/session.md)
-* [systemPreferences](api/system-preferences.md) 未翻译
+* [systemPreferences](api/system-preferences.md)
 * [Tray](api/tray.md)
 * [webContents](api/web-contents.md)
 
@@ -83,7 +85,7 @@
 ## 开发
 
 * [代码规范](development/coding-style.md)
-* [在 C++ 代码中试用 clang格式化工具](development/clang-format.md) 未翻译
+* [在 C++ 代码中使用 clang格式化工具](development/clang-format.md) 未翻译
 * [源码目录结构](development/source-code-directory-structure.md)
 * [与 NW.js（原 node-webkit）在技术上的差异](development/atom-shell-vs-node-webkit.md)
 * [构建系统概览](development/build-system-overview.md)

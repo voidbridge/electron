@@ -244,6 +244,9 @@ class WebContents : public mate::TrackableObject<WebContents>,
   void HandleKeyboardEvent(
       content::WebContents* source,
       const content::NativeWebKeyboardEvent& event) override;
+  bool PreHandleKeyboardEvent(content::WebContents* source,
+                              const content::NativeWebKeyboardEvent& event,
+                              bool* is_keyboard_shortcut) override;
   void EnterFullscreenModeForTab(content::WebContents* source,
                                  const GURL& origin) override;
   void ExitFullscreenModeForTab(content::WebContents* source) override;
@@ -275,6 +278,7 @@ class WebContents : public mate::TrackableObject<WebContents>,
 
   // content::WebContentsObserver:
   void BeforeUnloadFired(const base::TimeTicks& proceed_time) override;
+  void RenderViewCreated(content::RenderViewHost*) override;
   void RenderViewDeleted(content::RenderViewHost*) override;
   void RenderProcessGone(base::TerminationStatus status) override;
   void DocumentLoadedInFrame(

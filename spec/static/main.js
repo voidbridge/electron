@@ -8,6 +8,7 @@ const ipcMain = electron.ipcMain
 const dialog = electron.dialog
 const BrowserWindow = electron.BrowserWindow
 const protocol = electron.protocol
+const webContents = electron.webContents
 const v8 = require('v8')
 
 const Coverage = require('electabul').Coverage
@@ -92,7 +93,7 @@ if (global.isCi) {
 
 // Register app as standard scheme.
 global.standardScheme = 'app'
-protocol.registerStandardSchemes([global.standardScheme])
+protocol.registerStandardSchemes([global.standardScheme], { secure: true })
 
 app.on('window-all-closed', function () {
   app.quit()
@@ -184,6 +185,12 @@ app.on('ready', function () {
     event.returnValue = 'done'
   })
 
+  ipcMain.on('prevent-next-input-event', (event, key, id) => {
+    webContents.fromId(id).once('before-input-event', (event, input) => {
+      if (key === input.key) event.preventDefault()
+    })
+  })
+
   ipcMain.on('executeJavaScript', function (event, code, hasCallback) {
     if (hasCallback) {
       window.webContents.executeJavaScript(code, (result) => {
@@ -198,4 +205,43 @@ app.on('ready', function () {
       event.returnValue = 'success'
     }
   })
+})
+
+ipcMain.on('set-client-certificate-option', function (event, skip) {
+  app.once('select-client-certificate', function (event, webContents, url, list, callback) {
+    event.preventDefault()
+    if (skip) {
+      callback()
+    } else {
+      ipcMain.on('client-certificate-response', function (event, certificate) {
+        callback(certificate)
+      })
+      window.webContents.send('select-client-certificate', webContents.id, list)
+    }
+  })
+  event.returnValue = 'done'
+})
+
+ipcMain.on('close-on-will-navigate', (event, id) => {
+  const contents = event.sender
+  const window = BrowserWindow.fromId(id)
+  window.webContents.once('will-navigate', (event, input) => {
+    window.close()
+    contents.send('closed-on-will-navigate')
+  })
+})
+
+ipcMain.on('create-window-with-options-cycle', (event) => {
+  // This can't be done over remote since cycles are already
+  // nulled out at the IPC layer
+  const foo = {}
+  foo.bar = foo
+  foo.baz = {
+    hello: {
+      world: true
+    }
+  }
+  foo.baz2 = foo.baz
+  const window = new BrowserWindow({show: false, foo: foo})
+  event.returnValue = window.id
 })

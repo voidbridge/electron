@@ -137,6 +137,7 @@ void WebFrame::SetSpellCheckProvider(mate::Arguments* args,
 }
 
 void WebFrame::RegisterURLSchemeAsSecure(const std::string& scheme) {
+  // TODO(pfrazee): Remove 2.0
   // Register scheme to secure list (https, wss, data).
   blink::WebSecurityPolicy::registerURLSchemeAsSecure(
       blink::WebString::fromUTF8(scheme));
@@ -169,6 +170,7 @@ void WebFrame::RegisterURLSchemeAsPrivileged(const std::string& scheme,
   // Register scheme to privileged list (https, wss, data, chrome-extension)
   blink::WebString privileged_scheme(blink::WebString::fromUTF8(scheme));
   if (secure) {
+    // TODO(pfrazee): Remove 2.0
     blink::WebSecurityPolicy::registerURLSchemeAsSecure(privileged_scheme);
   }
   if (bypassCSP) {

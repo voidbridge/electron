@@ -22,7 +22,7 @@ behavior to electron@github.com.
 ## Downloads
 
 To install prebuilt Electron binaries, use
-[`npm`](https://docs.npmjs.com/) (or [`yarn`](https://yarnpkg.com/en/docs/managing-dependencies)):
+[`npm`](https://docs.npmjs.com/):
 
 ```sh
 # Install as a development dependency
@@ -73,7 +73,7 @@ forums
 - [`Atom`](http://atom-slack.herokuapp.com/) channel on Slack
 - [`electron-br`](https://electron-br.slack.com) *(Brazilian Portuguese)*
 - [`electron-kr`](http://www.meetup.com/electron-kr/) *(Korean)*
-- [`electron-jp`](https://electron-jp-slackin.herokuapp.com/) *(Japanese)*
+- [`electron-jp`](https://electron-jp.slack.com) *(Japanese)*
 - [`electron-tr`](http://www.meetup.com/Electron-JS-Istanbul/) *(Turkish)*
 - [`electron-id`](https://electron-id.slack.com) *(Indonesia)*
 

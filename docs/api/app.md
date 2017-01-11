@@ -2,7 +2,7 @@
 
 > Control your application's event lifecycle.
 
-Process: [Main](../tutorial/quick-start.md#main-process)
+Process: [Main](../glossary.md#main-process)
 
 The following example shows how to quit the application when the last window is
 closed:
@@ -113,7 +113,7 @@ Returns:
 * `url` String
 
 Emitted when the user wants to open a URL with the application. Your application's
-`Info.plist` file must define the url scheme within the `CFBundleURLTypes` key, and 
+`Info.plist` file must define the url scheme within the `CFBundleURLTypes` key, and
 set `NSPrincipalClass` to `AtomApplication`.
 
 You should call `event.preventDefault()` if you want to handle this event.
@@ -189,7 +189,7 @@ Returns:
 
 * `event` Event
 * `webContents` [WebContents](web-contents.md)
-* `url` URL
+* `url` String
 * `error` String - The error code
 * `certificate` [Certificate](structures/certificate.md)
 * `callback` Function
@@ -222,12 +222,12 @@ Returns:
 * `url` URL
 * `certificateList` [Certificate[]](structures/certificate.md)
 * `callback` Function
-  * `certificate` [Certificate](structures/certificate.md)
+  * `certificate` [Certificate](structures/certificate.md) (optional)
 
 Emitted when a client certificate is requested.
 
 The `url` corresponds to the navigation entry requesting the client certificate
-and `callback` needs to be called with an entry filtered from the list. Using
+and `callback` can be called with an entry filtered from the list. Using
 `event.preventDefault()` prevents the application from using the first
 certificate from the store.
 
@@ -467,7 +467,7 @@ Clears the recent documents list.
   app to handle `electron://` links, call this method with `electron` as the
   parameter.
 * `path` String (optional) _Windows_ - Defaults to `process.execPath`
-* `args` String[] - (optional) _Windows_ - Defaults to an empty array
+* `args` String[] (optional) _Windows_ - Defaults to an empty array
 
 Returns `Boolean` - Whether the call succeeded.
 
@@ -491,7 +491,7 @@ The API uses the Windows Registry and LSSetDefaultHandlerForURLScheme internally
 
 * `protocol` String - The name of your protocol, without `://`.
 * `path` String (optional) _Windows_ - Defaults to `process.execPath`
-* `args` String[] - (optional) _Windows_ - Defaults to an empty array
+* `args` String[] (optional) _Windows_ - Defaults to an empty array
 
 Returns `Boolean` - Whether the call succeeded.
 
@@ -503,7 +503,7 @@ protocol (aka URI scheme). If so, it will remove the app as the default handler.
 
 * `protocol` String - The name of your protocol, without `://`.
 * `path` String (optional) _Windows_ - Defaults to `process.execPath`
-* `args` String[] - (optional) _Windows_ - Defaults to an empty array
+* `args` String[] (optional) _Windows_ - Defaults to an empty array
 
 Returns `Boolean`
 
@@ -845,7 +845,7 @@ When `informational` is passed, the dock icon will bounce for one second.
 However, the request remains active until either the application becomes active
 or the request is canceled.
 
-Returns an ID representing the request.
+Returns `Integer` an ID representing the request.
 
 ### `app.dock.cancelBounce(id)` _macOS_
 
@@ -891,7 +891,7 @@ Sets the application's [dock menu][dock-menu].
 
 ### `app.dock.setIcon(image)` _macOS_
 
-* `image` [NativeImage](native-image.md)
+* `image` ([NativeImage](native-image.md) | String)
 
 Sets the `image` associated with this dock icon.
 

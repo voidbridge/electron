@@ -2,7 +2,7 @@
 
 > Display native system dialogs for opening and saving files, alerting, etc.
 
-Process: [Main](../tutorial/quick-start.md#main-process)
+Process: [Main](../glossary.md#main-process)
 
 An example of showing a dialog to select multiple files and directories:
 
@@ -32,9 +32,17 @@ The `dialog` module has the following methods:
   * `buttonLabel` String (optional) - Custom label for the confirmation button, when
     left empty the default label will be used.
   * `filters` [FileFilter[]](structures/file-filter.md) (optional)
-  * `properties` String[] - (optional) - Contains which features the dialog should use, can
+  * `properties` String[] (optional) - Contains which features the dialog should use, can
     contain `openFile`, `openDirectory`, `multiSelections`, `createDirectory`
     and `showHiddenFiles`.
+  * `normalizeAccessKeys` Boolean (optional) - Normalize the keyboard access keys
+    across platforms. Default is `false`. Enabling this assumes `&` is used in
+    the button labels for the placement of the keyboard shortcut access key
+    and labels will be converted so they work correctly on each platform, `&`
+    characters are removed on macOS, converted to `_` on Linux, and left
+    untouched on Windows. For example, a button label of `Vie&w` will be
+    converted to `Vie_w` on Linux and `View` on macOS and can be selected
+    via `Alt-W` on Windows and Linux.
 * `callback` Function (optional)
   * `filePaths` String[] - An array of file paths chosen by the user
 
@@ -77,7 +85,7 @@ shown.
   * `defaultPath` String (optional)
   * `buttonLabel` String (optional) - Custom label for the confirmation button, when
     left empty the default label will be used.
-  * `filters` [FileFilter[]](structrs/file-filter.md) (optional)
+  * `filters` [FileFilter[]](structures/file-filter.md) (optional)
 * `callback` Function (optional)
   * `filename` String
 
@@ -99,7 +107,7 @@ will be passed via `callback(filename)`
   * `type` String (optional) - Can be `"none"`, `"info"`, `"error"`, `"question"` or
   `"warning"`. On Windows, "question" displays the same icon as "info", unless
   you set an icon using the "icon" option.
-  * `buttons` String[] - (optional) - Array of texts for buttons. On Windows, an empty array
+  * `buttons` String[] (optional) - Array of texts for buttons. On Windows, an empty array
     will result in one button labeled "OK".
   * `defaultId` Integer (optional) - Index of the button in the buttons array which will
     be selected by default when the message box opens.
