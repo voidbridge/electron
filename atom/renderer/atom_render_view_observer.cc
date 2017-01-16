@@ -76,7 +76,7 @@ blink::WebFrame* FindFrame(blink::WebFrame* frame,
     return frame;
   }
 
-  blink::WebFrame* target_frame;
+  blink::WebFrame* target_frame = nullptr;
   for (blink::WebFrame* child = frame->firstChild(); child;
        child = child->nextSibling()) {
     target_frame = FindFrame(child, frame_unique_name);
