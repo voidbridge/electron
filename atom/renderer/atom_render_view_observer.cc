@@ -70,6 +70,23 @@ base::StringPiece NetResourceProvider(int key) {
   return base::StringPiece();
 }
 
+blink::WebFrame* FindFrame(blink::WebFrame* frame,
+                           const std::string& frame_unique_name) {
+  if (frame->uniqueName().utf8() == frame_unique_name) {
+    return frame;
+  }
+
+  blink::WebFrame* target_frame;
+  for (blink::WebFrame* child = frame->firstChild(); child;
+       child = child->nextSibling()) {
+    target_frame = FindFrame(child, frame_unique_name);
+    if (target_frame)
+      break;
+  }
+
+  return target_frame;
+}
+
 }  // namespace
 
 AtomRenderViewObserver::AtomRenderViewObserver(
@@ -158,6 +175,7 @@ void AtomRenderViewObserver::OnDestruct() {
 }
 
 void AtomRenderViewObserver::OnBrowserMessage(bool send_to_all,
+                                              const std::string& frame_unique_name,
                                               const base::string16& channel,
                                               const base::ListValue& args) {
   if (!document_created_)
@@ -166,8 +184,12 @@ void AtomRenderViewObserver::OnBrowserMessage(bool send_to_all,
   if (!render_view()->GetWebView())
     return;
 
-  blink::WebFrame* frame = render_view()->GetWebView()->mainFrame();
-  if (!frame || frame->isWebRemoteFrame())
+  blink::WebFrame* main_frame = render_view()->GetWebView()->mainFrame();
+  if (!main_frame || main_frame->isWebRemoteFrame())
+    return;
+
+  blink::WebFrame* frame = FindFrame(main_frame, frame_unique_name);
+  if (!frame)
     return;
 
   EmitIPCEvent(frame, channel, args);
