@@ -37,6 +37,7 @@ class AtomRenderViewObserver : public content::RenderViewObserver {
   void OnDestruct() override;
 
   void OnBrowserMessage(bool send_to_all,
+                        const std::string& frame_unique_name,
                         const base::string16& channel,
                         const base::ListValue& args);
 
