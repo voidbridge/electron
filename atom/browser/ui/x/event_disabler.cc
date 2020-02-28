@@ -4,13 +4,13 @@
 
 #include "atom/browser/ui/x/event_disabler.h"
 
+#include <memory>
+
 namespace atom {
 
-EventDisabler::EventDisabler() {
-}
+EventDisabler::EventDisabler() {}
 
-EventDisabler::~EventDisabler() {
-}
+EventDisabler::~EventDisabler() {}
 
 ui::EventRewriteStatus EventDisabler::RewriteEvent(
     const ui::Event& event,

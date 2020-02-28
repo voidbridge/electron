@@ -1,6 +1,6 @@
 # Windows Store Guide
 
-With Windows 8, the good old win32 executable got a new sibling: The Universal
+With Windows 10, the good old win32 executable got a new sibling: The Universal
 Windows Platform. The new `.appx` format does not only enable a number of new
 powerful APIs like Cortana or Push Notifications, but through the Windows Store,
 also simplifies installation and updating.
@@ -36,7 +36,7 @@ requirements:
 
 Then, go and install the `electron-windows-store` CLI:
 
-```
+```sh
 npm install -g electron-windows-store
 ```
 
@@ -44,11 +44,11 @@ npm install -g electron-windows-store
 
 Package the application using [electron-packager][electron-packager] (or a similar tool).
 Make sure to remove `node_modules` that you don't need in your final application, since
-any module you don't actually need will just increase your application's size.
+any module you don't actually need will increase your application's size.
 
 The output should look roughly like this:
 
-```
+```text
 ├── Ghost.exe
 ├── LICENSE
 ├── content_resources_200_percent.pak
@@ -67,10 +67,9 @@ The output should look roughly like this:
 ├── resources
 │   ├── app
 │   └── atom.asar
-├── snapshot_blob.bin
+├── v8_context_snapshot.bin
 ├── squirrel.exe
-├── ui_resources_200_percent.pak
-└── xinput1_3.dll
+└── ui_resources_200_percent.pak
 ```
 
 ## Step 2: Running electron-windows-store
@@ -80,7 +79,7 @@ From an elevated PowerShell (run it "as Administrator"), run
 and output directories, the app's name and version, and confirmation that
 `node_modules` should be flattened.
 
-```
+```powershell
 electron-windows-store `
     --input-directory C:\myelectronapp `
     --output-directory C:\output\myelectronapp `
@@ -109,8 +108,8 @@ In order to run your package, your users will need Windows 10 with the so-called
 
 In opposition to traditional UWP apps, packaged apps currently need to undergo a
 manual verification process, for which you can apply [here][centennial-campaigns].
-In the meantime, all users will be able to just install your package by double-clicking it,
-so a submission to the store might not be necessary if you're simply looking for an 
+In the meantime, all users will be able to install your package by double-clicking it,
+so a submission to the store might not be necessary if you're looking for an
 easier installation method. In managed environments (usually enterprises), the
 `Add-AppxPackage` [PowerShell Cmdlet can be used to install it in an automated fashion][add-appxpackage].
 
@@ -125,7 +124,7 @@ Cortana integration, or live tiles.
 To check out how an Electron app that uses a background task to send toast
 notifications and live tiles, [check out the Microsoft-provided sample][background-task].
 
-## Optional: Convert using Container Virtualiziation
+## Optional: Convert using Container Virtualization
 
 To generate the AppX package, the `electron-windows-store` CLI uses a template
 that should work for most Electron apps. However, if you are using a custom
@@ -135,7 +134,7 @@ that mode, the CLI will install and run your application in blank Windows Contai
 to determine what modifications your application is exactly doing to the operating
 system.
 
-Before running the CLI for the, you will have to setup the "Windows Desktop App
+Before running the CLI for the first time, you will have to setup the "Windows Desktop App
 Converter". This will take a few minutes, but don't worry - you only have to do
 this once. Download and Desktop App Converter from [here][app-converter].
 You will receive two files: `DesktopAppConverter.zip` and `BaseImage-14316.wim`.
@@ -152,7 +151,7 @@ You will receive two files: `DesktopAppConverter.zip` and `BaseImage-14316.wim`.
 Once installation succeeded, you can move on to compiling your Electron app.
 
 [windows-sdk]: https://developer.microsoft.com/en-us/windows/downloads/windows-10-sdk
-[app-converter]: https://www.microsoft.com/en-us/download/details.aspx?id=51691
+[app-converter]: https://docs.microsoft.com/en-us/windows/uwp/porting/desktop-to-uwp-run-desktop-app-converter
 [add-appxpackage]: https://technet.microsoft.com/en-us/library/hh856048.aspx
 [electron-packager]: https://github.com/electron-userland/electron-packager
 [electron-windows-store]: https://github.com/catalystcode/electron-windows-store

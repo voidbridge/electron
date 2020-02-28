@@ -14,67 +14,177 @@
 #include "base/mac/scoped_cftyperef.h"
 #include "base/strings/sys_string_conversions.h"
 
+@interface PopUpButtonHandler : NSObject
+
+@property(nonatomic, assign) NSSavePanel* savePanel;
+@property(nonatomic, strong) NSArray* fileTypesList;
+
+- (instancetype)initWithPanel:(NSSavePanel*)panel
+                 andTypesList:(NSArray*)typesList;
+- (void)selectFormat:(id)sender;
+
+@end
+
+@implementation PopUpButtonHandler
+
+@synthesize savePanel;
+@synthesize fileTypesList;
+
+- (instancetype)initWithPanel:(NSSavePanel*)panel
+                 andTypesList:(NSArray*)typesList {
+  self = [super init];
+  if (self) {
+    [self setSavePanel:panel];
+    [self setFileTypesList:typesList];
+  }
+  return self;
+}
+
+- (void)selectFormat:(id)sender {
+  NSPopUpButton* button = (NSPopUpButton*)sender;
+  NSInteger selectedItemIndex = [button indexOfSelectedItem];
+  NSArray* list = [self fileTypesList];
+  NSArray* fileTypes = [list objectAtIndex:selectedItemIndex];
+
+  // If we meet a '*' file extension, we allow all the file types and no
+  // need to set the specified file types.
+  if ([fileTypes count] == 0 || [fileTypes containsObject:@"*"])
+    [[self savePanel] setAllowedFileTypes:nil];
+  else
+    [[self savePanel] setAllowedFileTypes:fileTypes];
+}
+
+@end
+
+// Manages the PopUpButtonHandler.
+@interface AtomAccessoryView : NSView
+@end
+
+@implementation AtomAccessoryView
+
+- (void)dealloc {
+  auto* popupButton =
+      static_cast<NSPopUpButton*>([[self subviews] objectAtIndex:1]);
+  [[popupButton target] release];
+  [super dealloc];
+}
+
+@end
+
 namespace file_dialog {
+
+DialogSettings::DialogSettings() = default;
+DialogSettings::DialogSettings(const DialogSettings&) = default;
+DialogSettings::~DialogSettings() = default;
 
 namespace {
 
 void SetAllowedFileTypes(NSSavePanel* dialog, const Filters& filters) {
-  NSMutableSet* file_type_set = [NSMutableSet set];
-  for (size_t i = 0; i < filters.size(); ++i) {
-    const Filter& filter = filters[i];
-    for (size_t j = 0; j < filter.second.size(); ++j) {
-      // If we meet a '*' file extension, we allow all the file types and no
-      // need to set the specified file types.
-      if (filter.second[j] == "*") {
-        [dialog setAllowsOtherFileTypes:YES];
-        return;
-      }
-      base::ScopedCFTypeRef<CFStringRef> ext_cf(
-          base::SysUTF8ToCFStringRef(filter.second[j]));
-      [file_type_set addObject:base::mac::CFToNSCast(ext_cf.get())];
+  NSMutableArray* file_types_list = [NSMutableArray array];
+  NSMutableArray* filter_names = [NSMutableArray array];
+
+  // Create array to keep file types and their name.
+  for (const Filter& filter : filters) {
+    NSMutableSet* file_type_set = [NSMutableSet set];
+    [filter_names addObject:@(filter.first.c_str())];
+    for (const std::string& ext : filter.second) {
+      [file_type_set addObject:@(ext.c_str())];
     }
+    [file_types_list addObject:[file_type_set allObjects]];
   }
 
   // Passing empty array to setAllowedFileTypes will cause exception.
   NSArray* file_types = nil;
-  if ([file_type_set count])
-    file_types = [file_type_set allObjects];
-
+  NSUInteger count = [file_types_list count];
+  if (count > 0) {
+    file_types = [[file_types_list objectAtIndex:0] allObjects];
+    // If we meet a '*' file extension, we allow all the file types and no
+    // need to set the specified file types.
+    if ([file_types count] == 0 || [file_types containsObject:@"*"])
+      file_types = nil;
+  }
   [dialog setAllowedFileTypes:file_types];
+
+  if (count <= 1)
+    return;  // don't add file format picker
+
+  // Add file format picker.
+  AtomAccessoryView* accessoryView =
+      [[AtomAccessoryView alloc] initWithFrame:NSMakeRect(0.0, 0.0, 200, 32.0)];
+  NSTextField* label =
+      [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 60, 22)];
+
+  [label setEditable:NO];
+  [label setStringValue:@"Format:"];
+  [label setBordered:NO];
+  [label setBezeled:NO];
+  [label setDrawsBackground:NO];
+
+  NSPopUpButton* popupButton =
+      [[NSPopUpButton alloc] initWithFrame:NSMakeRect(50.0, 2, 140, 22.0)
+                                 pullsDown:NO];
+  PopUpButtonHandler* popUpButtonHandler =
+      [[PopUpButtonHandler alloc] initWithPanel:dialog
+                                   andTypesList:file_types_list];
+  [popupButton addItemsWithTitles:filter_names];
+  [popupButton setTarget:popUpButtonHandler];
+  [popupButton setAction:@selector(selectFormat:)];
+
+  [accessoryView addSubview:[label autorelease]];
+  [accessoryView addSubview:[popupButton autorelease]];
+
+  [dialog setAccessoryView:[accessoryView autorelease]];
 }
 
-void SetupDialog(NSSavePanel* dialog,
-                 const std::string& title,
-                 const std::string& button_label,
-                 const base::FilePath& default_path,
-                 const Filters& filters) {
-  if (!title.empty())
-    [dialog setTitle:base::SysUTF8ToNSString(title)];
+void SetupDialog(NSSavePanel* dialog, const DialogSettings& settings) {
+  if (!settings.title.empty())
+    [dialog setTitle:base::SysUTF8ToNSString(settings.title)];
 
-  if (!button_label.empty())
-    [dialog setPrompt:base::SysUTF8ToNSString(button_label)];
+  if (!settings.button_label.empty())
+    [dialog setPrompt:base::SysUTF8ToNSString(settings.button_label)];
+
+  if (!settings.message.empty())
+    [dialog setMessage:base::SysUTF8ToNSString(settings.message)];
+
+  if (!settings.name_field_label.empty())
+    [dialog
+        setNameFieldLabel:base::SysUTF8ToNSString(settings.name_field_label)];
+
+  [dialog setShowsTagField:settings.shows_tag_field];
 
   NSString* default_dir = nil;
   NSString* default_filename = nil;
-  if (!default_path.empty()) {
-    if (base::DirectoryExists(default_path)) {
-      default_dir = base::SysUTF8ToNSString(default_path.value());
+  if (!settings.default_path.empty()) {
+    base::ThreadRestrictions::ScopedAllowIO allow_io;
+    if (base::DirectoryExists(settings.default_path)) {
+      default_dir = base::SysUTF8ToNSString(settings.default_path.value());
     } else {
-      default_dir = base::SysUTF8ToNSString(default_path.DirName().value());
+      if (settings.default_path.IsAbsolute()) {
+        default_dir =
+            base::SysUTF8ToNSString(settings.default_path.DirName().value());
+      }
+
       default_filename =
-          base::SysUTF8ToNSString(default_path.BaseName().value());
+          base::SysUTF8ToNSString(settings.default_path.BaseName().value());
     }
   }
+
+  if (settings.filters.empty()) {
+    [dialog setAllowsOtherFileTypes:YES];
+  } else {
+    // Set setAllowedFileTypes before setNameFieldStringValue as it might
+    // override the extension set using setNameFieldStringValue
+    SetAllowedFileTypes(dialog, settings.filters);
+  }
+
+  // Make sure the extension is always visible. Without this, the extension in
+  // the default filename will not be used in the saved file.
+  [dialog setExtensionHidden:NO];
 
   if (default_dir)
     [dialog setDirectoryURL:[NSURL fileURLWithPath:default_dir]];
   if (default_filename)
     [dialog setNameFieldStringValue:default_filename];
-
-  if (filters.empty())
-    [dialog setAllowsOtherFileTypes:YES];
-  else
-    SetAllowedFileTypes(dialog, filters);
 }
 
 void SetupDialogForProperties(NSOpenPanel* dialog, int properties) {
@@ -87,50 +197,86 @@ void SetupDialogForProperties(NSOpenPanel* dialog, int properties) {
     [dialog setAllowsMultipleSelection:YES];
   if (properties & FILE_DIALOG_SHOW_HIDDEN_FILES)
     [dialog setShowsHiddenFiles:YES];
+  if (properties & FILE_DIALOG_NO_RESOLVE_ALIASES)
+    [dialog setResolvesAliases:NO];
+  if (properties & FILE_DIALOG_TREAT_PACKAGE_APP_AS_DIRECTORY)
+    [dialog setTreatsFilePackagesAsDirectories:YES];
 }
 
 // Run modal dialog with parent window and return user's choice.
-int RunModalDialog(NSSavePanel* dialog, atom::NativeWindow* parent_window) {
+int RunModalDialog(NSSavePanel* dialog, const DialogSettings& settings) {
   __block int chosen = NSFileHandlingPanelCancelButton;
-  if (!parent_window || !parent_window->GetNativeWindow()) {
+  if (!settings.parent_window || !settings.parent_window->GetNativeWindow() ||
+      settings.force_detached) {
     chosen = [dialog runModal];
   } else {
-    NSWindow* window = parent_window->GetNativeWindow();
+    NSWindow* window =
+        settings.parent_window->GetNativeWindow().GetNativeNSWindow();
 
     [dialog beginSheetModalForWindow:window
                    completionHandler:^(NSInteger c) {
-      chosen = c;
-      [NSApp stopModal];
-    }];
+                     chosen = c;
+                     [NSApp stopModal];
+                   }];
     [NSApp runModalForWindow:window];
   }
 
   return chosen;
 }
 
-void ReadDialogPaths(NSOpenPanel* dialog, std::vector<base::FilePath>* paths) {
+// Create bookmark data and serialise it into a base64 string.
+std::string GetBookmarkDataFromNSURL(NSURL* url) {
+  // Create the file if it doesn't exist (necessary for NSSavePanel options).
+  NSFileManager* defaultManager = [NSFileManager defaultManager];
+  if (![defaultManager fileExistsAtPath:[url path]]) {
+    [defaultManager createFileAtPath:[url path] contents:nil attributes:nil];
+  }
+
+  NSError* error = nil;
+  NSData* bookmarkData =
+      [url bookmarkDataWithOptions:NSURLBookmarkCreationWithSecurityScope
+          includingResourceValuesForKeys:nil
+                           relativeToURL:nil
+                                   error:&error];
+  if (error != nil) {
+    // Send back an empty string if there was an error.
+    return "";
+  } else {
+    // Encode NSData in base64 then convert to NSString.
+    NSString* base64data = [[NSString alloc]
+        initWithData:[bookmarkData base64EncodedDataWithOptions:0]
+            encoding:NSUTF8StringEncoding];
+    return base::SysNSStringToUTF8(base64data);
+  }
+}
+
+void ReadDialogPathsWithBookmarks(NSOpenPanel* dialog,
+                                  std::vector<base::FilePath>* paths,
+                                  std::vector<std::string>* bookmarks) {
   NSArray* urls = [dialog URLs];
   for (NSURL* url in urls)
-    if ([url isFileURL])
+    if ([url isFileURL]) {
       paths->push_back(base::FilePath(base::SysNSStringToUTF8([url path])));
+      bookmarks->push_back(GetBookmarkDataFromNSURL(url));
+    }
+}
+
+void ReadDialogPaths(NSOpenPanel* dialog, std::vector<base::FilePath>* paths) {
+  std::vector<std::string> ignored_bookmarks;
+  ReadDialogPathsWithBookmarks(dialog, paths, &ignored_bookmarks);
 }
 
 }  // namespace
 
-bool ShowOpenDialog(atom::NativeWindow* parent_window,
-                    const std::string& title,
-                    const std::string& button_label,
-                    const base::FilePath& default_path,
-                    const Filters& filters,
-                    int properties,
-                    std::vector<base::FilePath>* paths) {
+bool ShowOpenDialogSync(const DialogSettings& settings,
+                        std::vector<base::FilePath>* paths) {
   DCHECK(paths);
   NSOpenPanel* dialog = [NSOpenPanel openPanel];
 
-  SetupDialog(dialog, title, button_label, default_path, filters);
-  SetupDialogForProperties(dialog, properties);
+  SetupDialog(dialog, settings);
+  SetupDialogForProperties(dialog, settings.properties);
 
-  int chosen = RunModalDialog(dialog, parent_window);
+  int chosen = RunModalDialog(dialog, settings);
   if (chosen == NSFileHandlingPanelCancelButton)
     return false;
 
@@ -138,47 +284,75 @@ bool ShowOpenDialog(atom::NativeWindow* parent_window,
   return true;
 }
 
-void ShowOpenDialog(atom::NativeWindow* parent_window,
-                    const std::string& title,
-                    const std::string& button_label,
-                    const base::FilePath& default_path,
-                    const Filters& filters,
-                    int properties,
-                    const OpenDialogCallback& c) {
-  NSOpenPanel* dialog = [NSOpenPanel openPanel];
-
-  SetupDialog(dialog, title, button_label, default_path, filters);
-  SetupDialogForProperties(dialog, properties);
-
-  // Duplicate the callback object here since c is a reference and gcd would
-  // only store the pointer, by duplication we can force gcd to store a copy.
-  __block OpenDialogCallback callback = c;
-
-  NSWindow* window = parent_window ? parent_window->GetNativeWindow() : NULL;
-  [dialog beginSheetModalForWindow:window
-                 completionHandler:^(NSInteger chosen) {
-    if (chosen == NSFileHandlingPanelCancelButton) {
-      callback.Run(false, std::vector<base::FilePath>());
-    } else {
-      std::vector<base::FilePath> paths;
+void OpenDialogCompletion(int chosen,
+                          NSOpenPanel* dialog,
+                          bool security_scoped_bookmarks,
+                          atom::util::Promise promise) {
+  mate::Dictionary dict = mate::Dictionary::CreateEmpty(promise.isolate());
+  if (chosen == NSFileHandlingPanelCancelButton) {
+    dict.Set("canceled", true);
+    dict.Set("filePaths", std::vector<base::FilePath>());
+#if defined(MAS_BUILD)
+    dict.Set("bookmarks", std::vector<std::string>());
+#endif
+    promise.Resolve(dict.GetHandle());
+  } else {
+    std::vector<base::FilePath> paths;
+    dict.Set("canceled", false);
+#if defined(MAS_BUILD)
+    std::vector<std::string> bookmarks;
+    if (security_scoped_bookmarks)
+      ReadDialogPathsWithBookmarks(dialog, &paths, &bookmarks);
+    else
       ReadDialogPaths(dialog, &paths);
-      callback.Run(true, paths);
-    }
-  }];
+    dict.Set("filePaths", paths);
+    dict.Set("bookmarks", bookmarks);
+#else
+    ReadDialogPaths(dialog, &paths);
+    dict.Set("filePaths", paths);
+#endif
+    promise.Resolve(dict.GetHandle());
+  }
 }
 
-bool ShowSaveDialog(atom::NativeWindow* parent_window,
-                    const std::string& title,
-                    const std::string& button_label,
-                    const base::FilePath& default_path,
-                    const Filters& filters,
-                    base::FilePath* path) {
+void ShowOpenDialog(const DialogSettings& settings,
+                    atom::util::Promise promise) {
+  NSOpenPanel* dialog = [NSOpenPanel openPanel];
+
+  SetupDialog(dialog, settings);
+  SetupDialogForProperties(dialog, settings.properties);
+
+  // Capture the value of the security_scoped_bookmarks settings flag
+  // and pass it to the completion handler.
+  bool security_scoped_bookmarks = settings.security_scoped_bookmarks;
+
+  __block atom::util::Promise p = std::move(promise);
+
+  if (!settings.parent_window || !settings.parent_window->GetNativeWindow() ||
+      settings.force_detached) {
+    [dialog beginWithCompletionHandler:^(NSInteger chosen) {
+      OpenDialogCompletion(chosen, dialog, security_scoped_bookmarks,
+                           std::move(p));
+    }];
+  } else {
+    NSWindow* window =
+        settings.parent_window->GetNativeWindow().GetNativeNSWindow();
+    [dialog
+        beginSheetModalForWindow:window
+               completionHandler:^(NSInteger chosen) {
+                 OpenDialogCompletion(chosen, dialog, security_scoped_bookmarks,
+                                      std::move(p));
+               }];
+  }
+}
+
+bool ShowSaveDialogSync(const DialogSettings& settings, base::FilePath* path) {
   DCHECK(path);
   NSSavePanel* dialog = [NSSavePanel savePanel];
 
-  SetupDialog(dialog, title, button_label, default_path, filters);
+  SetupDialog(dialog, settings);
 
-  int chosen = RunModalDialog(dialog, parent_window);
+  int chosen = RunModalDialog(dialog, settings);
   if (chosen == NSFileHandlingPanelCancelButton || ![[dialog URL] isFileURL])
     return false;
 
@@ -186,29 +360,61 @@ bool ShowSaveDialog(atom::NativeWindow* parent_window,
   return true;
 }
 
-void ShowSaveDialog(atom::NativeWindow* parent_window,
-                    const std::string& title,
-                    const std::string& button_label,
-                    const base::FilePath& default_path,
-                    const Filters& filters,
-                    const SaveDialogCallback& c) {
+void SaveDialogCompletion(int chosen,
+                          NSSavePanel* dialog,
+                          bool security_scoped_bookmarks,
+                          atom::util::Promise promise) {
+  mate::Dictionary dict = mate::Dictionary::CreateEmpty(promise.isolate());
+  if (chosen == NSFileHandlingPanelCancelButton) {
+    dict.Set("canceled", true);
+    dict.Set("filePath", base::FilePath());
+#if defined(MAS_BUILD)
+    dict.Set("bookmark", "");
+#endif
+  } else {
+    std::string path = base::SysNSStringToUTF8([[dialog URL] path]);
+    dict.Set("filePath", base::FilePath(path));
+    dict.Set("canceled", false);
+#if defined(MAS_BUILD)
+    std::string bookmark;
+    if (security_scoped_bookmarks) {
+      bookmark = GetBookmarkDataFromNSURL([dialog URL]);
+      dict.Set("bookmark", bookmark);
+    }
+#endif
+  }
+  promise.Resolve(dict.GetHandle());
+}
+
+void ShowSaveDialog(const DialogSettings& settings,
+                    atom::util::Promise promise) {
   NSSavePanel* dialog = [NSSavePanel savePanel];
 
-  SetupDialog(dialog, title, button_label, default_path, filters);
+  SetupDialog(dialog, settings);
   [dialog setCanSelectHiddenExtension:YES];
 
-  __block SaveDialogCallback callback = c;
+  // Capture the value of the security_scoped_bookmarks settings flag
+  // and pass it to the completion handler.
+  bool security_scoped_bookmarks = settings.security_scoped_bookmarks;
 
-  NSWindow* window = parent_window ? parent_window->GetNativeWindow() : NULL;
-  [dialog beginSheetModalForWindow:window
-                 completionHandler:^(NSInteger chosen) {
-    if (chosen == NSFileHandlingPanelCancelButton) {
-      callback.Run(false, base::FilePath());
-    } else {
-      std::string path = base::SysNSStringToUTF8([[dialog URL] path]);
-      callback.Run(true, base::FilePath(path));
-    }
-  }];
+  __block atom::util::Promise p = std::move(promise);
+
+  if (!settings.parent_window || !settings.parent_window->GetNativeWindow() ||
+      settings.force_detached) {
+    [dialog beginWithCompletionHandler:^(NSInteger chosen) {
+      SaveDialogCompletion(chosen, dialog, security_scoped_bookmarks,
+                           std::move(p));
+    }];
+  } else {
+    NSWindow* window =
+        settings.parent_window->GetNativeWindow().GetNativeNSWindow();
+    [dialog
+        beginSheetModalForWindow:window
+               completionHandler:^(NSInteger chosen) {
+                 SaveDialogCompletion(chosen, dialog, security_scoped_bookmarks,
+                                      std::move(p));
+               }];
+  }
 }
 
 }  // namespace file_dialog

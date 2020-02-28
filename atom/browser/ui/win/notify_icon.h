@@ -9,16 +9,23 @@
 
 #include <shellapi.h>
 
+#include <memory>
 #include <string>
 
 #include "atom/browser/ui/tray_icon.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 #include "base/win/scoped_gdi_object.h"
 
 namespace gfx {
 class Point;
 }
+
+namespace views {
+class MenuRunner;
+class Widget;
+}  // namespace views
 
 namespace atom {
 
@@ -28,7 +35,7 @@ class NotifyIcon : public TrayIcon {
  public:
   // Constructor which provides this icon's unique ID and messaging window.
   NotifyIcon(NotifyIconHost* host, UINT id, HWND window, UINT message);
-  virtual ~NotifyIcon();
+  ~NotifyIcon() override;
 
   // Handles a click event from the user - if |left_button_click| is true and
   // there is a registered observer, passes the click event to the observer,
@@ -58,6 +65,7 @@ class NotifyIcon : public TrayIcon {
 
  private:
   void InitIconData(NOTIFYICONDATA* icon_data);
+  void OnContextMenuClosed();
 
   // The tray that owns us.  Weak.
   NotifyIconHost* host_;
@@ -75,7 +83,16 @@ class NotifyIcon : public TrayIcon {
   base::win::ScopedHICON icon_;
 
   // The context menu.
-  AtomMenuModel* menu_model_;
+  AtomMenuModel* menu_model_ = nullptr;
+
+  // Context menu associated with this icon (if any).
+  std::unique_ptr<views::MenuRunner> menu_runner_;
+
+  // Temporary widget for the context menu, needed for keyboard event capture.
+  std::unique_ptr<views::Widget> widget_;
+
+  // WeakPtrFactory for CloseClosure safety.
+  base::WeakPtrFactory<NotifyIcon> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(NotifyIcon);
 };

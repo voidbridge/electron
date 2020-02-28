@@ -12,8 +12,8 @@ namespace atom {
 
 class NodeBindingsLinux : public NodeBindings {
  public:
-  explicit NodeBindingsLinux(bool is_browser);
-  virtual ~NodeBindingsLinux();
+  explicit NodeBindingsLinux(BrowserEnvironment browser_env);
+  ~NodeBindingsLinux() override;
 
   void RunMessageLoop() override;
 

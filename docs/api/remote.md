@@ -16,13 +16,17 @@ similar to Java's [RMI][rmi]. An example of creating a browser window from a
 renderer process:
 
 ```javascript
-const {BrowserWindow} = require('electron').remote
-let win = new BrowserWindow({width: 800, height: 600})
+const { BrowserWindow } = require('electron').remote
+let win = new BrowserWindow({ width: 800, height: 600 })
 win.loadURL('https://github.com')
 ```
 
 **Note:** For the reverse (access the renderer process from the main process),
-you can use [webContents.executeJavascript](web-contents.md#contentsexecutejavascriptcode-usergesture-callback).
+you can use [webContents.executeJavaScript](web-contents.md#contentsexecutejavascriptcode-usergesture-callback).
+
+**Note:** The remote module can be disabled for security reasons in the following contexts:
+- [`BrowserWindow`](browser-window.md) - by setting the `enableRemoteModule` option to `false`.
+- [`<webview>`](webview-tag.md) - by setting the `enableremotemodule` attribute to `false`.
 
 ## Remote Objects
 
@@ -32,7 +36,7 @@ When you invoke methods of a remote object, call a remote function, or create
 a new object with the remote constructor (function), you are actually sending
 synchronous inter-process messages.
 
-In the example above, both `BrowserWindow` and `win` were remote objects and
+In the example above, both [`BrowserWindow`](browser-window.md) and `win` were remote objects and
 `new BrowserWindow` didn't create a `BrowserWindow` object in the renderer
 process. Instead, it created a `BrowserWindow` object in the main process and
 returned the corresponding remote object in the renderer process, namely the
@@ -119,7 +123,7 @@ event is emitted.
 
 To avoid this problem, ensure you clean up any references to renderer callbacks
 passed to the main process. This involves cleaning up event handlers, or
-ensuring the main process is explicitly told to deference callbacks that came
+ensuring the main process is explicitly told to dereference callbacks that came
 from a renderer process that is exiting.
 
 ## Accessing built-in modules in the main process
@@ -141,11 +145,46 @@ The `remote` module has the following methods:
 * `module` String
 
 Returns `any` - The object returned by `require(module)` in the main process.
+Modules specified by their relative path will resolve relative to the entrypoint
+of the main process.
+
+e.g.
+
+```sh
+project/
+├── main
+│   ├── foo.js
+│   └── index.js
+├── package.json
+└── renderer
+    └── index.js
+```
+
+```js
+// main process: main/index.js
+const { app } = require('electron')
+app.on('ready', () => { /* ... */ })
+```
+
+```js
+// some relative module: main/foo.js
+module.exports = 'bar'
+```
+
+```js
+// renderer process: renderer/index.js
+const foo = require('electron').remote.require('./foo') // bar
+```
 
 ### `remote.getCurrentWindow()`
 
 Returns [`BrowserWindow`](browser-window.md) - The window to which this web page
 belongs.
+
+**Note:** Do not use `removeAllListeners` on [`BrowserWindow`](browser-window.md).
+Use of this can remove all [`blur`](https://developer.mozilla.org/en-US/docs/Web/Events/blur)
+listeners, disable click events on touch bar buttons, and other unintended
+consequences.
 
 ### `remote.getCurrentWebContents()`
 
@@ -165,5 +204,5 @@ process.
 The `process` object in the main process. This is the same as
 `remote.getGlobal('process')` but is cached.
 
-[rmi]: http://en.wikipedia.org/wiki/Java_remote_method_invocation
+[rmi]: https://en.wikipedia.org/wiki/Java_remote_method_invocation
 [enumerable-properties]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Enumerability_and_ownership_of_properties

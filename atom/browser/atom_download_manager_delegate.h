@@ -7,6 +7,7 @@
 
 #include <string>
 
+#include "atom/browser/ui/file_dialog.h"
 #include "base/memory/weak_ptr.h"
 #include "content/public/browser/download_manager_delegate.h"
 
@@ -22,32 +23,32 @@ class AtomDownloadManagerDelegate : public content::DownloadManagerDelegate {
       base::Callback<void(const base::FilePath&)>;
 
   explicit AtomDownloadManagerDelegate(content::DownloadManager* manager);
-  virtual ~AtomDownloadManagerDelegate();
-
-  // Generate default file path to save the download.
-  void CreateDownloadPath(const GURL& url,
-                          const std::string& suggested_filename,
-                          const std::string& content_disposition,
-                          const std::string& mime_type,
-                          const base::FilePath& path,
-                          const CreateDownloadPathCallback& callback);
-  void OnDownloadPathGenerated(uint32_t download_id,
-                               const content::DownloadTargetCallback& callback,
-                               const base::FilePath& default_path);
+  ~AtomDownloadManagerDelegate() override;
 
   // content::DownloadManagerDelegate:
   void Shutdown() override;
   bool DetermineDownloadTarget(
-      content::DownloadItem* download,
+      download::DownloadItem* download,
       const content::DownloadTargetCallback& callback) override;
   bool ShouldOpenDownload(
-      content::DownloadItem* download,
+      download::DownloadItem* download,
       const content::DownloadOpenDelayedCallback& callback) override;
   void GetNextId(const content::DownloadIdCallback& callback) override;
 
  private:
   // Get the save path set on the associated api::DownloadItem object
-  void GetItemSavePath(content::DownloadItem* item, base::FilePath* path);
+  void GetItemSavePath(download::DownloadItem* item, base::FilePath* path);
+  void GetItemSaveDialogOptions(download::DownloadItem* item,
+                                file_dialog::DialogSettings* settings);
+
+  void OnDownloadPathGenerated(uint32_t download_id,
+                               const content::DownloadTargetCallback& callback,
+                               const base::FilePath& default_path);
+
+  void OnDownloadSaveDialogDone(
+      uint32_t download_id,
+      const content::DownloadTargetCallback& download_callback,
+      mate::Dictionary result);
 
   content::DownloadManager* download_manager_;
   base::WeakPtrFactory<AtomDownloadManagerDelegate> weak_ptr_factory_;

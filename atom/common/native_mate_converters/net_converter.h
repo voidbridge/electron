@@ -11,7 +11,7 @@
 namespace base {
 class DictionaryValue;
 class ListValue;
-}
+}  // namespace base
 
 namespace net {
 class AuthChallengeInfo;
@@ -19,23 +19,28 @@ class URLRequest;
 class X509Certificate;
 class HttpResponseHeaders;
 struct CertPrincipal;
-}
+}  // namespace net
 
 namespace mate {
 
-template<>
-struct Converter<const net::AuthChallengeInfo*> {
+template <>
+struct Converter<net::AuthChallengeInfo> {
   static v8::Local<v8::Value> ToV8(v8::Isolate* isolate,
-                                   const net::AuthChallengeInfo* val);
+                                   const net::AuthChallengeInfo& val);
 };
 
-template<>
+template <>
 struct Converter<scoped_refptr<net::X509Certificate>> {
-  static v8::Local<v8::Value> ToV8(v8::Isolate* isolate,
+  static v8::Local<v8::Value> ToV8(
+      v8::Isolate* isolate,
       const scoped_refptr<net::X509Certificate>& val);
+
+  static bool FromV8(v8::Isolate* isolate,
+                     v8::Local<v8::Value> val,
+                     scoped_refptr<net::X509Certificate>* out);
 };
 
-template<>
+template <>
 struct Converter<net::CertPrincipal> {
   static v8::Local<v8::Value> ToV8(v8::Isolate* isolate,
                                    const net::CertPrincipal& val);
@@ -45,6 +50,9 @@ template <>
 struct Converter<net::HttpResponseHeaders*> {
   static v8::Local<v8::Value> ToV8(v8::Isolate* isolate,
                                    net::HttpResponseHeaders* headers);
+  static bool FromV8(v8::Isolate* isolate,
+                     v8::Local<v8::Value> val,
+                     net::HttpResponseHeaders* out);
 };
 
 }  // namespace mate

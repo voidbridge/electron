@@ -7,32 +7,32 @@
 #include "atom/app/atom_main_delegate.h"
 #include "atom/app/node_main.h"
 #include "atom/common/atom_command_line.h"
+#include "atom/common/mac/main_application_bundle.h"
 #include "base/at_exit.h"
 #include "base/i18n/icu_util.h"
 #include "base/mac/bundle_locations.h"
 #include "base/mac/scoped_nsautorelease_pool.h"
-#include "brightray/common/mac/main_application_bundle.h"
 #include "content/public/app/content_main.h"
 
-#if defined(OS_MACOSX)
-int AtomMain(int argc, const char* argv[]) {
+int AtomMain(int argc, char* argv[]) {
   atom::AtomMainDelegate delegate;
   content::ContentMainParams params(&delegate);
   params.argc = argc;
-  params.argv = argv;
+  params.argv = const_cast<const char**>(argv);
   atom::AtomCommandLine::Init(argc, argv);
   return content::ContentMain(params);
 }
 
-int AtomInitializeICUandStartNode(int argc, char *argv[]) {
+#if BUILDFLAG(ENABLE_RUN_AS_NODE)
+int AtomInitializeICUandStartNode(int argc, char* argv[]) {
   base::AtExitManager atexit_manager;
   base::mac::ScopedNSAutoreleasePool pool;
   base::mac::SetOverrideFrameworkBundlePath(
-      brightray::MainApplicationBundlePath()
+      atom::MainApplicationBundlePath()
           .Append("Contents")
           .Append("Frameworks")
           .Append(ATOM_PRODUCT_NAME " Framework.framework"));
   base::i18n::InitializeICU();
   return atom::NodeMain(argc, argv);
 }
-#endif  // OS_MACOSX
+#endif

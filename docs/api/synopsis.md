@@ -13,17 +13,17 @@ both processes.
 
 The basic rule is: if a module is [GUI][gui] or low-level system related, then
 it should be only available in the main process. You need to be familiar with
-the concept of [main process vs. renderer process](../tutorial/quick-start.md#main-process)
+the concept of [main process vs. renderer process](../tutorial/application-architecture.md#main-and-renderer-processes)
 scripts to be able to use those modules.
 
-The main process script is just like a normal Node.js script:
+The main process script is like a normal Node.js script:
 
 ```javascript
-const {app, BrowserWindow} = require('electron')
+const { app, BrowserWindow } = require('electron')
 let win = null
 
 app.on('ready', () => {
-  win = new BrowserWindow({width: 800, height: 600})
+  win = new BrowserWindow({ width: 800, height: 600 })
   win.loadURL('https://github.com')
 })
 ```
@@ -36,14 +36,14 @@ extra ability to use node modules:
 <html>
 <body>
 <script>
-  const {app} = require('electron').remote
+  const { app } = require('electron').remote
   console.log(app.getVersion())
 </script>
 </body>
 </html>
 ```
 
-To run your app, read [Run your app](../tutorial/quick-start.md#run-your-app).
+To run your app, read [Run your app](../tutorial/first-app.md#running-your-app).
 
 ## Destructuring assignment
 
@@ -52,7 +52,7 @@ As of 0.37, you can use
 built-in modules.
 
 ```javascript
-const {app, BrowserWindow} = require('electron')
+const { app, BrowserWindow } = require('electron')
 
 let win
 
@@ -67,7 +67,7 @@ destructuring to access the individual modules from `electron`.
 
 ```javascript
 const electron = require('electron')
-const {app, BrowserWindow} = electron
+const { app, BrowserWindow } = electron
 
 let win
 

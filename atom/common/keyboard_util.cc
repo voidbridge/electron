@@ -7,79 +7,12 @@
 #include "atom/common/keyboard_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "third_party/WebKit/public/web/WebInputEvent.h"
+#include "third_party/blink/public/platform/web_input_event.h"
 #include "ui/events/event_constants.h"
 
 namespace atom {
 
 namespace {
-
-// Return key code of the char, and also determine whether the SHIFT key is
-// pressed.
-ui::KeyboardCode KeyboardCodeFromCharCode(base::char16 c, bool* shifted) {
-  c = base::ToLowerASCII(c);
-  *shifted = false;
-  switch (c) {
-    case 0x08: return ui::VKEY_BACK;
-    case 0x7F: return ui::VKEY_DELETE;
-    case 0x09: return ui::VKEY_TAB;
-    case 0x0D: return ui::VKEY_RETURN;
-    case 0x1B: return ui::VKEY_ESCAPE;
-    case ' ': return ui::VKEY_SPACE;
-
-    case 'a': return ui::VKEY_A;
-    case 'b': return ui::VKEY_B;
-    case 'c': return ui::VKEY_C;
-    case 'd': return ui::VKEY_D;
-    case 'e': return ui::VKEY_E;
-    case 'f': return ui::VKEY_F;
-    case 'g': return ui::VKEY_G;
-    case 'h': return ui::VKEY_H;
-    case 'i': return ui::VKEY_I;
-    case 'j': return ui::VKEY_J;
-    case 'k': return ui::VKEY_K;
-    case 'l': return ui::VKEY_L;
-    case 'm': return ui::VKEY_M;
-    case 'n': return ui::VKEY_N;
-    case 'o': return ui::VKEY_O;
-    case 'p': return ui::VKEY_P;
-    case 'q': return ui::VKEY_Q;
-    case 'r': return ui::VKEY_R;
-    case 's': return ui::VKEY_S;
-    case 't': return ui::VKEY_T;
-    case 'u': return ui::VKEY_U;
-    case 'v': return ui::VKEY_V;
-    case 'w': return ui::VKEY_W;
-    case 'x': return ui::VKEY_X;
-    case 'y': return ui::VKEY_Y;
-    case 'z': return ui::VKEY_Z;
-
-    case ')': *shifted = true; case '0': return ui::VKEY_0;
-    case '!': *shifted = true; case '1': return ui::VKEY_1;
-    case '@': *shifted = true; case '2': return ui::VKEY_2;
-    case '#': *shifted = true; case '3': return ui::VKEY_3;
-    case '$': *shifted = true; case '4': return ui::VKEY_4;
-    case '%': *shifted = true; case '5': return ui::VKEY_5;
-    case '^': *shifted = true; case '6': return ui::VKEY_6;
-    case '&': *shifted = true; case '7': return ui::VKEY_7;
-    case '*': *shifted = true; case '8': return ui::VKEY_8;
-    case '(': *shifted = true; case '9': return ui::VKEY_9;
-
-    case ':': *shifted = true; case ';': return ui::VKEY_OEM_1;
-    case '+': *shifted = true; case '=': return ui::VKEY_OEM_PLUS;
-    case '<': *shifted = true; case ',': return ui::VKEY_OEM_COMMA;
-    case '_': *shifted = true; case '-': return ui::VKEY_OEM_MINUS;
-    case '>': *shifted = true; case '.': return ui::VKEY_OEM_PERIOD;
-    case '?': *shifted = true; case '/': return ui::VKEY_OEM_2;
-    case '~': *shifted = true; case '`': return ui::VKEY_OEM_3;
-    case '{': *shifted = true; case '[': return ui::VKEY_OEM_4;
-    case '|': *shifted = true; case '\\': return ui::VKEY_OEM_5;
-    case '}': *shifted = true; case ']': return ui::VKEY_OEM_6;
-    case '"': *shifted = true; case '\'': return ui::VKEY_OEM_7;
-
-    default: return ui::VKEY_UNKNOWN;
-  }
-}
 
 // Return key code represented by |str|.
 ui::KeyboardCode KeyboardCodeFromKeyIdentifier(const std::string& s,
@@ -105,8 +38,44 @@ ui::KeyboardCode KeyboardCodeFromKeyIdentifier(const std::string& s,
   } else if (str == "plus") {
     *shifted = true;
     return ui::VKEY_OEM_PLUS;
+  } else if (str == "capslock") {
+    return ui::VKEY_CAPITAL;
+  } else if (str == "numlock") {
+    return ui::VKEY_NUMLOCK;
+  } else if (str == "scrolllock") {
+    return ui::VKEY_SCROLL;
   } else if (str == "tab") {
     return ui::VKEY_TAB;
+  } else if (str == "num0") {
+    return ui::VKEY_NUMPAD0;
+  } else if (str == "num1") {
+    return ui::VKEY_NUMPAD1;
+  } else if (str == "num2") {
+    return ui::VKEY_NUMPAD2;
+  } else if (str == "num3") {
+    return ui::VKEY_NUMPAD3;
+  } else if (str == "num4") {
+    return ui::VKEY_NUMPAD4;
+  } else if (str == "num5") {
+    return ui::VKEY_NUMPAD5;
+  } else if (str == "num6") {
+    return ui::VKEY_NUMPAD6;
+  } else if (str == "num7") {
+    return ui::VKEY_NUMPAD7;
+  } else if (str == "num8") {
+    return ui::VKEY_NUMPAD8;
+  } else if (str == "num9") {
+    return ui::VKEY_NUMPAD9;
+  } else if (str == "numadd") {
+    return ui::VKEY_ADD;
+  } else if (str == "nummult") {
+    return ui::VKEY_MULTIPLY;
+  } else if (str == "numdec") {
+    return ui::VKEY_DECIMAL;
+  } else if (str == "numsub") {
+    return ui::VKEY_SUBTRACT;
+  } else if (str == "numdiv") {
+    return ui::VKEY_DIVIDE;
   } else if (str == "space") {
     return ui::VKEY_SPACE;
   } else if (str == "backspace") {
@@ -169,6 +138,187 @@ ui::KeyboardCode KeyboardCodeFromKeyIdentifier(const std::string& s,
 
 }  // namespace
 
+ui::KeyboardCode KeyboardCodeFromCharCode(base::char16 c, bool* shifted) {
+  c = base::ToLowerASCII(c);
+  *shifted = false;
+  switch (c) {
+    case 0x08:
+      return ui::VKEY_BACK;
+    case 0x7F:
+      return ui::VKEY_DELETE;
+    case 0x09:
+      return ui::VKEY_TAB;
+    case 0x0D:
+      return ui::VKEY_RETURN;
+    case 0x1B:
+      return ui::VKEY_ESCAPE;
+    case ' ':
+      return ui::VKEY_SPACE;
+    case 'a':
+      return ui::VKEY_A;
+    case 'b':
+      return ui::VKEY_B;
+    case 'c':
+      return ui::VKEY_C;
+    case 'd':
+      return ui::VKEY_D;
+    case 'e':
+      return ui::VKEY_E;
+    case 'f':
+      return ui::VKEY_F;
+    case 'g':
+      return ui::VKEY_G;
+    case 'h':
+      return ui::VKEY_H;
+    case 'i':
+      return ui::VKEY_I;
+    case 'j':
+      return ui::VKEY_J;
+    case 'k':
+      return ui::VKEY_K;
+    case 'l':
+      return ui::VKEY_L;
+    case 'm':
+      return ui::VKEY_M;
+    case 'n':
+      return ui::VKEY_N;
+    case 'o':
+      return ui::VKEY_O;
+    case 'p':
+      return ui::VKEY_P;
+    case 'q':
+      return ui::VKEY_Q;
+    case 'r':
+      return ui::VKEY_R;
+    case 's':
+      return ui::VKEY_S;
+    case 't':
+      return ui::VKEY_T;
+    case 'u':
+      return ui::VKEY_U;
+    case 'v':
+      return ui::VKEY_V;
+    case 'w':
+      return ui::VKEY_W;
+    case 'x':
+      return ui::VKEY_X;
+    case 'y':
+      return ui::VKEY_Y;
+    case 'z':
+      return ui::VKEY_Z;
+
+    case ')':
+      *shifted = true;
+      FALLTHROUGH;
+    case '0':
+      return ui::VKEY_0;
+    case '!':
+      *shifted = true;
+      FALLTHROUGH;
+    case '1':
+      return ui::VKEY_1;
+    case '@':
+      *shifted = true;
+      FALLTHROUGH;
+    case '2':
+      return ui::VKEY_2;
+    case '#':
+      *shifted = true;
+      FALLTHROUGH;
+    case '3':
+      return ui::VKEY_3;
+    case '$':
+      *shifted = true;
+      FALLTHROUGH;
+    case '4':
+      return ui::VKEY_4;
+    case '%':
+      *shifted = true;
+      FALLTHROUGH;
+    case '5':
+      return ui::VKEY_5;
+    case '^':
+      *shifted = true;
+      FALLTHROUGH;
+    case '6':
+      return ui::VKEY_6;
+    case '&':
+      *shifted = true;
+      FALLTHROUGH;
+    case '7':
+      return ui::VKEY_7;
+    case '*':
+      *shifted = true;
+      FALLTHROUGH;
+    case '8':
+      return ui::VKEY_8;
+    case '(':
+      *shifted = true;
+      FALLTHROUGH;
+    case '9':
+      return ui::VKEY_9;
+
+    case ':':
+      *shifted = true;
+      FALLTHROUGH;
+    case ';':
+      return ui::VKEY_OEM_1;
+    case '+':
+      *shifted = true;
+      FALLTHROUGH;
+    case '=':
+      return ui::VKEY_OEM_PLUS;
+    case '<':
+      *shifted = true;
+      FALLTHROUGH;
+    case ',':
+      return ui::VKEY_OEM_COMMA;
+    case '_':
+      *shifted = true;
+      FALLTHROUGH;
+    case '-':
+      return ui::VKEY_OEM_MINUS;
+    case '>':
+      *shifted = true;
+      FALLTHROUGH;
+    case '.':
+      return ui::VKEY_OEM_PERIOD;
+    case '?':
+      *shifted = true;
+      FALLTHROUGH;
+    case '/':
+      return ui::VKEY_OEM_2;
+    case '~':
+      *shifted = true;
+      FALLTHROUGH;
+    case '`':
+      return ui::VKEY_OEM_3;
+    case '{':
+      *shifted = true;
+      FALLTHROUGH;
+    case '[':
+      return ui::VKEY_OEM_4;
+    case '|':
+      *shifted = true;
+      FALLTHROUGH;
+    case '\\':
+      return ui::VKEY_OEM_5;
+    case '}':
+      *shifted = true;
+      FALLTHROUGH;
+    case ']':
+      return ui::VKEY_OEM_6;
+    case '"':
+      *shifted = true;
+      FALLTHROUGH;
+    case '\'':
+      return ui::VKEY_OEM_7;
+
+    default:
+      return ui::VKEY_UNKNOWN;
+  }
+}
+
 ui::KeyboardCode KeyboardCodeFromStr(const std::string& str, bool* shifted) {
   if (str.size() == 1)
     return KeyboardCodeFromCharCode(str[0], shifted);
@@ -179,27 +329,27 @@ ui::KeyboardCode KeyboardCodeFromStr(const std::string& str, bool* shifted) {
 int WebEventModifiersToEventFlags(int modifiers) {
   int flags = 0;
 
-  if (modifiers & blink::WebInputEvent::ShiftKey)
+  if (modifiers & blink::WebInputEvent::kShiftKey)
     flags |= ui::EF_SHIFT_DOWN;
-  if (modifiers & blink::WebInputEvent::ControlKey)
+  if (modifiers & blink::WebInputEvent::kControlKey)
     flags |= ui::EF_CONTROL_DOWN;
-  if (modifiers & blink::WebInputEvent::AltKey)
+  if (modifiers & blink::WebInputEvent::kAltKey)
     flags |= ui::EF_ALT_DOWN;
-  if (modifiers & blink::WebInputEvent::MetaKey)
+  if (modifiers & blink::WebInputEvent::kMetaKey)
     flags |= ui::EF_COMMAND_DOWN;
-  if (modifiers & blink::WebInputEvent::CapsLockOn)
+  if (modifiers & blink::WebInputEvent::kCapsLockOn)
     flags |= ui::EF_CAPS_LOCK_ON;
-  if (modifiers & blink::WebInputEvent::NumLockOn)
+  if (modifiers & blink::WebInputEvent::kNumLockOn)
     flags |= ui::EF_NUM_LOCK_ON;
-  if (modifiers & blink::WebInputEvent::ScrollLockOn)
+  if (modifiers & blink::WebInputEvent::kScrollLockOn)
     flags |= ui::EF_SCROLL_LOCK_ON;
-  if (modifiers & blink::WebInputEvent::LeftButtonDown)
+  if (modifiers & blink::WebInputEvent::kLeftButtonDown)
     flags |= ui::EF_LEFT_MOUSE_BUTTON;
-  if (modifiers & blink::WebInputEvent::MiddleButtonDown)
+  if (modifiers & blink::WebInputEvent::kMiddleButtonDown)
     flags |= ui::EF_MIDDLE_MOUSE_BUTTON;
-  if (modifiers & blink::WebInputEvent::RightButtonDown)
+  if (modifiers & blink::WebInputEvent::kRightButtonDown)
     flags |= ui::EF_RIGHT_MOUSE_BUTTON;
-  if (modifiers & blink::WebInputEvent::IsAutoRepeat)
+  if (modifiers & blink::WebInputEvent::kIsAutoRepeat)
     flags |= ui::EF_IS_REPEAT;
 
   return flags;

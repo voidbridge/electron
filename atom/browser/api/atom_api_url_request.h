@@ -7,6 +7,7 @@
 
 #include <array>
 #include <string>
+
 #include "atom/browser/api/event_emitter.h"
 #include "atom/browser/api/trackable_object.h"
 #include "base/memory/weak_ptr.h"
@@ -99,13 +100,18 @@ class URLRequest : public mate::EventEmitter<URLRequest> {
                              v8::Local<v8::FunctionTemplate> prototype);
 
   // Methods for reporting events into JavaScript.
-  void OnAuthenticationRequired(
-      scoped_refptr<const net::AuthChallengeInfo> auth_info);
+  void OnReceivedRedirect(
+      int status_code,
+      const std::string& method,
+      const GURL& url,
+      scoped_refptr<net::HttpResponseHeaders> response_headers);
+  void OnAuthenticationRequired(const net::AuthChallengeInfo& auth_info);
   void OnResponseStarted(
       scoped_refptr<net::HttpResponseHeaders> response_headers);
   void OnResponseData(scoped_refptr<const net::IOBufferWithSize> data);
   void OnResponseCompleted();
   void OnError(const std::string& error, bool isRequestError);
+  mate::Dictionary GetUploadProgress(v8::Isolate* isolate);
 
  protected:
   explicit URLRequest(v8::Isolate* isolate, v8::Local<v8::Object> wrapper);
@@ -170,6 +176,7 @@ class URLRequest : public mate::EventEmitter<URLRequest> {
   bool Failed() const;
   bool Write(scoped_refptr<const net::IOBufferWithSize> buffer, bool is_last);
   void Cancel();
+  void FollowRedirect();
   bool SetExtraHeader(const std::string& name, const std::string& value);
   void RemoveExtraHeader(const std::string& name);
   void SetChunkedUpload(bool is_chunked_upload);

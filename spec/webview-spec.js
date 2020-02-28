@@ -1,141 +1,248 @@
 const assert = require('assert')
+const chai = require('chai')
+const dirtyChai = require('dirty-chai')
 const path = require('path')
 const http = require('http')
 const url = require('url')
-const {app, session, getGuestWebContents, ipcMain, BrowserWindow, webContents} = require('electron').remote
-const {closeWindow} = require('./window-helpers')
+const { ipcRenderer, remote } = require('electron')
+const { app, session, ipcMain, BrowserWindow } = remote
+const { closeWindow } = require('./window-helpers')
+const { emittedOnce, waitForEvent } = require('./events-helpers')
+
+const { expect } = chai
+chai.use(dirtyChai)
+
+const features = process.electronBinding('features')
+const isCI = remote.getGlobal('isCi')
+const nativeModulesEnabled = remote.getGlobal('nativeModulesEnabled')
+
+/* Most of the APIs here don't use standard callbacks */
+/* eslint-disable standard/no-callback-literal */
 
 describe('<webview> tag', function () {
   this.timeout(3 * 60 * 1000)
 
-  var fixtures = path.join(__dirname, 'fixtures')
-
-  var webview = null
+  const fixtures = path.join(__dirname, 'fixtures')
+  let webview = null
   let w = null
 
-  beforeEach(function () {
+  const openTheWindow = async (...args) => {
+    await closeTheWindow()
+    w = new BrowserWindow(...args)
+    return w
+  }
+
+  const closeTheWindow = async () => {
+    await closeWindow(w)
+    w = null
+  }
+
+  const loadWebView = async (webview, attributes = {}) => {
+    for (const [name, value] of Object.entries(attributes)) {
+      webview.setAttribute(name, value)
+    }
+    document.body.appendChild(webview)
+    await waitForEvent(webview, 'did-finish-load')
+    return webview
+  }
+
+  const startLoadingWebViewAndWaitForMessage = async (webview, attributes = {}) => {
+    loadWebView(webview, attributes) // Don't wait for load to be finished.
+    const event = await waitForEvent(webview, 'console-message')
+    return event.message
+  }
+
+  beforeEach(() => {
     webview = new WebView()
   })
 
-  afterEach(function () {
+  afterEach(() => {
     if (!document.body.contains(webview)) {
       document.body.appendChild(webview)
     }
     webview.remove()
-    return closeWindow(w).then(function () { w = null })
+
+    return closeTheWindow()
   })
 
-  it('works without script tag in page', function (done) {
-    w = new BrowserWindow({show: false})
-    ipcMain.once('pong', function () {
-      done()
-    })
-    w.loadURL('file://' + fixtures + '/pages/webview-no-script.html')
-  })
-
-  it('is disabled when nodeIntegration is disabled', function (done) {
-    w = new BrowserWindow({
+  it('works without script tag in page', async () => {
+    const w = await openTheWindow({
       show: false,
       webPreferences: {
-        nodeIntegration: false,
-        preload: path.join(fixtures, 'module', 'preload-webview.js')
+        webviewTag: true,
+        nodeIntegration: true
       }
     })
-    ipcMain.once('webview', function (event, type) {
-      if (type === 'undefined') {
-        done()
-      } else {
-        done('WebView still exists')
-      }
-    })
-    w.loadURL('file://' + fixtures + '/pages/webview-no-script.html')
+    const pong = emittedOnce(ipcMain, 'pong')
+    w.loadFile(path.join(fixtures, 'pages', 'webview-no-script.html'))
+    await pong
   })
 
-  describe('src attribute', function () {
-    it('specifies the page to load', function (done) {
-      webview.addEventListener('console-message', function (e) {
-        assert.equal(e.message, 'a')
-        done()
+  it('works with sandbox', async () => {
+    const w = await openTheWindow({
+      show: false,
+      webPreferences: {
+        webviewTag: true,
+        nodeIntegration: true,
+        sandbox: true
+      }
+    })
+    const pong = emittedOnce(ipcMain, 'pong')
+    w.loadFile(path.join(fixtures, 'pages', 'webview-isolated.html'))
+    await pong
+  })
+
+  it('works with contextIsolation', async () => {
+    const w = await openTheWindow({
+      show: false,
+      webPreferences: {
+        webviewTag: true,
+        nodeIntegration: true,
+        contextIsolation: true
+      }
+    })
+    const pong = emittedOnce(ipcMain, 'pong')
+    w.loadFile(path.join(fixtures, 'pages', 'webview-isolated.html'))
+    await pong
+  })
+
+  it('works with contextIsolation + sandbox', async () => {
+    const w = await openTheWindow({
+      show: false,
+      webPreferences: {
+        webviewTag: true,
+        nodeIntegration: true,
+        contextIsolation: true,
+        sandbox: true
+      }
+    })
+    const pong = emittedOnce(ipcMain, 'pong')
+    w.loadFile(path.join(fixtures, 'pages', 'webview-isolated.html'))
+    await pong
+  })
+
+  it('is disabled by default', async () => {
+    const w = await openTheWindow({
+      show: false,
+      webPreferences: {
+        preload: path.join(fixtures, 'module', 'preload-webview.js'),
+        nodeIntegration: true
+      }
+    })
+
+    const webview = emittedOnce(ipcMain, 'webview')
+    w.loadFile(path.join(fixtures, 'pages', 'webview-no-script.html'))
+    const [, type] = await webview
+
+    expect(type).to.equal('undefined', 'WebView still exists')
+  })
+
+  describe('src attribute', () => {
+    it('specifies the page to load', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        src: `file://${fixtures}/pages/a.html`
       })
-      webview.src = 'file://' + fixtures + '/pages/a.html'
-      document.body.appendChild(webview)
+      expect(message).to.equal('a')
     })
 
-    it('navigates to new page when changed', function (done) {
-      var listener = function () {
-        webview.src = 'file://' + fixtures + '/pages/b.html'
-        webview.addEventListener('console-message', function (e) {
-          assert.equal(e.message, 'b')
-          done()
-        })
-        webview.removeEventListener('did-finish-load', listener)
+    it('navigates to new page when changed', async () => {
+      await loadWebView(webview, {
+        src: `file://${fixtures}/pages/a.html`
+      })
+
+      webview.src = `file://${fixtures}/pages/b.html`
+
+      const { message } = await waitForEvent(webview, 'console-message')
+      expect(message).to.equal('b')
+    })
+
+    it('resolves relative URLs', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        src: '../fixtures/pages/e.html'
+      })
+      assert.strictEqual(message, 'Window script is loaded before preload script')
+    })
+
+    it('ignores empty values', () => {
+      assert.strictEqual(webview.src, '')
+
+      for (const emptyValue of ['', null, undefined]) {
+        webview.src = emptyValue
+        expect(webview.src).to.equal('')
       }
-      webview.addEventListener('did-finish-load', listener)
-      webview.src = 'file://' + fixtures + '/pages/a.html'
-      document.body.appendChild(webview)
     })
 
-    it('resolves relative URLs', function (done) {
-      var listener = function (e) {
-        assert.equal(e.message, 'Window script is loaded before preload script')
-        webview.removeEventListener('console-message', listener)
-        done()
-      }
-      webview.addEventListener('console-message', listener)
-      webview.src = '../fixtures/pages/e.html'
-      document.body.appendChild(webview)
-    })
+    it('does not wait until loadURL is resolved', async () => {
+      await loadWebView(webview, { src: 'about:blank' })
 
-    it('ignores empty values', function () {
-      assert.equal(webview.src, '')
-      webview.src = ''
-      assert.equal(webview.src, '')
-      webview.src = null
-      assert.equal(webview.src, '')
-      webview.src = undefined
-      assert.equal(webview.src, '')
+      const before = Date.now()
+      webview.src = 'https://github.com'
+      const now = Date.now()
+
+      // Setting src is essentially sending a sync IPC message, which should
+      // not exceed more than a few ms.
+      //
+      // This is for testing #18638.
+      expect(now - before).to.be.below(100)
     })
   })
 
-  describe('nodeintegration attribute', function () {
-    it('inserts no node symbols when not set', function (done) {
-      webview.addEventListener('console-message', function (e) {
-        assert.equal(e.message, 'undefined undefined undefined undefined')
-        done()
+  describe('nodeintegration attribute', () => {
+    it('inserts no node symbols when not set', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        src: `file://${fixtures}/pages/c.html`
       })
-      webview.src = 'file://' + fixtures + '/pages/c.html'
-      document.body.appendChild(webview)
+
+      const types = JSON.parse(message)
+      expect(types).to.include({
+        require: 'undefined',
+        module: 'undefined',
+        process: 'undefined',
+        global: 'undefined'
+      })
     })
 
-    it('inserts node symbols when set', function (done) {
-      webview.addEventListener('console-message', function (e) {
-        assert.equal(e.message, 'function object object')
-        done()
+    it('inserts node symbols when set', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        nodeintegration: 'on',
+        src: `file://${fixtures}/pages/d.html`
       })
-      webview.setAttribute('nodeintegration', 'on')
-      webview.src = 'file://' + fixtures + '/pages/d.html'
-      document.body.appendChild(webview)
+
+      const types = JSON.parse(message)
+      expect(types).to.include({
+        require: 'function',
+        module: 'object',
+        process: 'object'
+      })
     })
 
-    it('loads node symbols after POST navigation when set', function (done) {
-      webview.addEventListener('console-message', function (e) {
-        assert.equal(e.message, 'function object object')
-        done()
+    it('loads node symbols after POST navigation when set', async function () {
+      // FIXME Figure out why this is timing out on AppVeyor
+      if (process.env.APPVEYOR === 'True') {
+        this.skip()
+        return
+      }
+
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        nodeintegration: 'on',
+        src: `file://${fixtures}/pages/post.html`
       })
-      webview.setAttribute('nodeintegration', 'on')
-      webview.src = 'file://' + fixtures + '/pages/post.html'
-      document.body.appendChild(webview)
+
+      const types = JSON.parse(message)
+      expect(types).to.include({
+        require: 'function',
+        module: 'object',
+        process: 'object'
+      })
     })
 
-    it('disables node integration on child windows when it is disabled on the webview', function (done) {
-      app.once('browser-window-created', function (event, window) {
-        assert.equal(window.webContents.getWebPreferences().nodeIntegration, false)
+    it('disables node integration on child windows when it is disabled on the webview', (done) => {
+      app.once('browser-window-created', (event, window) => {
+        assert.strictEqual(window.webContents.getWebPreferences().nodeIntegration, false)
         done()
       })
 
-      webview.setAttribute('allowpopups', 'on')
-
-      webview.src = url.format({
+      const src = url.format({
         pathname: `${fixtures}/pages/webview-opener-no-node-integration.html`,
         protocol: 'file',
         query: {
@@ -143,533 +250,659 @@ describe('<webview> tag', function () {
         },
         slashes: true
       })
-      document.body.appendChild(webview)
+      loadWebView(webview, {
+        allowpopups: 'on',
+        src
+      })
+    });
+
+    (nativeModulesEnabled ? it : it.skip)('loads native modules when navigation happens', async function () {
+      await loadWebView(webview, {
+        nodeintegration: 'on',
+        src: `file://${fixtures}/pages/native-module.html`
+      })
+
+      webview.reload()
+
+      const { message } = await waitForEvent(webview, 'console-message')
+      assert.strictEqual(message, 'function')
+    })
+  })
+
+  describe('enableremotemodule attribute', () => {
+    const generateSpecs = (description, sandbox) => {
+      describe(description, () => {
+        const preload = `${fixtures}/module/preload-disable-remote.js`
+        const src = `file://${fixtures}/api/blank.html`
+
+        it('enables the remote module by default', async () => {
+          const message = await startLoadingWebViewAndWaitForMessage(webview, {
+            preload,
+            src,
+            sandbox
+          })
+
+          const typeOfRemote = JSON.parse(message)
+          expect(typeOfRemote).to.equal('object')
+        })
+
+        it('disables the remote module when false', async () => {
+          const message = await startLoadingWebViewAndWaitForMessage(webview, {
+            preload,
+            src,
+            sandbox,
+            enableremotemodule: false
+          })
+
+          const typeOfRemote = JSON.parse(message)
+          expect(typeOfRemote).to.equal('undefined')
+        })
+      })
+    }
+
+    generateSpecs('without sandbox', false)
+    generateSpecs('with sandbox', true)
+  })
+
+  describe('preload attribute', () => {
+    it('loads the script before other scripts in window', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        preload: `${fixtures}/module/preload.js`,
+        src: `file://${fixtures}/pages/e.html`
+      })
+
+      expect(message).to.be.a('string')
+      expect(message).to.be.not.equal('Window script is loaded before preload script')
     })
 
-    if (process.platform !== 'win32' || process.execPath.toLowerCase().indexOf('\\out\\d\\') === -1) {
-      it('loads native modules when navigation happens', function (done) {
-        var listener = function () {
-          webview.removeEventListener('did-finish-load', listener)
-          var listener2 = function (e) {
-            assert.equal(e.message, 'function')
-            done()
-          }
-          webview.addEventListener('console-message', listener2)
-          webview.reload()
+    it('preload script can still use "process" and "Buffer" when nodeintegration is off', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        preload: `${fixtures}/module/preload-node-off.js`,
+        src: `file://${fixtures}/api/blank.html`
+      })
+
+      const types = JSON.parse(message)
+      expect(types).to.include({
+        process: 'object',
+        Buffer: 'function'
+      })
+    })
+
+    it('runs in the correct scope when sandboxed', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        preload: `${fixtures}/module/preload-context.js`,
+        src: `file://${fixtures}/api/blank.html`,
+        webpreferences: 'sandbox=yes'
+      })
+
+      const types = JSON.parse(message)
+      expect(types).to.include({
+        require: 'function', // arguments passed to it should be availale
+        electron: 'undefined', // objects from the scope it is called from should not be available
+        window: 'object', // the window object should be available
+        localVar: 'undefined' // but local variables should not be exposed to the window
+      })
+    })
+
+    it('preload script can require modules that still use "process" and "Buffer" when nodeintegration is off', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        preload: `${fixtures}/module/preload-node-off-wrapper.js`,
+        src: `file://${fixtures}/api/blank.html`
+      })
+
+      const types = JSON.parse(message)
+      expect(types).to.include({
+        process: 'object',
+        Buffer: 'function'
+      })
+    })
+
+    it('receives ipc message in preload script', async () => {
+      await loadWebView(webview, {
+        preload: `${fixtures}/module/preload-ipc.js`,
+        src: `file://${fixtures}/pages/e.html`
+      })
+
+      const message = 'boom!'
+      webview.send('ping', message)
+
+      const { channel, args } = await waitForEvent(webview, 'ipc-message')
+      assert.strictEqual(channel, 'pong')
+      assert.deepStrictEqual(args, [message])
+    })
+
+    it('works without script tag in page', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        preload: `${fixtures}/module/preload.js`,
+        src: `file://${fixtures}pages/base-page.html`
+      })
+
+      const types = JSON.parse(message)
+      expect(types).to.include({
+        require: 'function',
+        module: 'object',
+        process: 'object',
+        Buffer: 'function'
+      })
+    })
+
+    it('resolves relative URLs', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        preload: '../fixtures/module/preload.js',
+        src: `file://${fixtures}/pages/e.html`
+      })
+
+      const types = JSON.parse(message)
+      expect(types).to.include({
+        require: 'function',
+        module: 'object',
+        process: 'object',
+        Buffer: 'function'
+      })
+    })
+
+    it('ignores empty values', () => {
+      assert.strictEqual(webview.preload, '')
+
+      for (const emptyValue of ['', null, undefined]) {
+        webview.preload = emptyValue
+        assert.strictEqual(webview.preload, '')
+      }
+    })
+  })
+
+  describe('httpreferrer attribute', () => {
+    it('sets the referrer url', (done) => {
+      const referrer = 'http://github.com/'
+      const server = http.createServer((req, res) => {
+        res.end()
+        server.close()
+        assert.strictEqual(req.headers.referer, referrer)
+        done()
+      }).listen(0, '127.0.0.1', () => {
+        const port = server.address().port
+        loadWebView(webview, {
+          httpreferrer: referrer,
+          src: `http://127.0.0.1:${port}`
+        })
+      })
+    })
+  })
+
+  describe('useragent attribute', () => {
+    it('sets the user agent', async () => {
+      const referrer = 'Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; AS; rv:11.0) like Gecko'
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        src: `file://${fixtures}/pages/useragent.html`,
+        useragent: referrer
+      })
+      expect(message).to.equal(referrer)
+    })
+  })
+
+  describe('disablewebsecurity attribute', () => {
+    it('does not disable web security when not set', async () => {
+      const jqueryPath = path.join(__dirname, '/static/jquery-2.0.3.min.js')
+      const src = `<script src='file://${jqueryPath}'></script> <script>console.log('ok');</script>`
+      const encoded = btoa(unescape(encodeURIComponent(src)))
+
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        src: `data:text/html;base64,${encoded}`
+      })
+      expect(message).to.be.a('string')
+      expect(message).to.contain('Not allowed to load local resource')
+    })
+
+    it('disables web security when set', async () => {
+      const jqueryPath = path.join(__dirname, '/static/jquery-2.0.3.min.js')
+      const src = `<script src='file://${jqueryPath}'></script> <script>console.log('ok');</script>`
+      const encoded = btoa(unescape(encodeURIComponent(src)))
+
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        disablewebsecurity: '',
+        src: `data:text/html;base64,${encoded}`
+      })
+      expect(message).to.equal('ok')
+    })
+
+    it('does not break node integration', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        disablewebsecurity: '',
+        nodeintegration: 'on',
+        src: `file://${fixtures}/pages/d.html`
+      })
+
+      const types = JSON.parse(message)
+      expect(types).to.include({
+        require: 'function',
+        module: 'object',
+        process: 'object'
+      })
+    })
+
+    it('does not break preload script', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        disablewebsecurity: '',
+        preload: `${fixtures}/module/preload.js`,
+        src: `file://${fixtures}/pages/e.html`
+      })
+
+      const types = JSON.parse(message)
+      expect(types).to.include({
+        require: 'function',
+        module: 'object',
+        process: 'object',
+        Buffer: 'function'
+      })
+    })
+  })
+
+  describe('partition attribute', () => {
+    it('inserts no node symbols when not set', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        partition: 'test1',
+        src: `file://${fixtures}/pages/c.html`
+      })
+
+      const types = JSON.parse(message)
+      expect(types).to.include({
+        require: 'undefined',
+        module: 'undefined',
+        process: 'undefined',
+        global: 'undefined'
+      })
+    })
+
+    it('inserts node symbols when set', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        nodeintegration: 'on',
+        partition: 'test2',
+        src: `file://${fixtures}/pages/d.html`
+      })
+
+      const types = JSON.parse(message)
+      expect(types).to.include({
+        require: 'function',
+        module: 'object',
+        process: 'object'
+      })
+    })
+
+    it('isolates storage for different id', async () => {
+      window.localStorage.setItem('test', 'one')
+
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        partition: 'test3',
+        src: `file://${fixtures}/pages/partition/one.html`
+      })
+
+      const parsedMessage = JSON.parse(message)
+      expect(parsedMessage).to.include({
+        numberOfEntries: 0,
+        testValue: null
+      })
+    })
+
+    it('uses current session storage when no id is provided', async () => {
+      const testValue = 'one'
+      window.localStorage.setItem('test', testValue)
+
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        src: `file://${fixtures}/pages/partition/one.html`
+      })
+
+      const parsedMessage = JSON.parse(message)
+      expect(parsedMessage).to.include({
+        numberOfEntries: 1,
+        testValue
+      })
+    })
+  })
+
+  describe('allowpopups attribute', () => {
+    const generateSpecs = (description, webpreferences = '') => {
+      describe(description, () => {
+        it('can not open new window when not set', async () => {
+          const message = await startLoadingWebViewAndWaitForMessage(webview, {
+            webpreferences,
+            src: `file://${fixtures}/pages/window-open-hide.html`
+          })
+          expect(message).to.equal('null')
+        })
+
+        it('can open new window when set', async () => {
+          const message = await startLoadingWebViewAndWaitForMessage(webview, {
+            webpreferences,
+            allowpopups: 'on',
+            src: `file://${fixtures}/pages/window-open-hide.html`
+          })
+          expect(message).to.equal('window')
+        })
+      })
+    }
+
+    generateSpecs('without sandbox')
+    generateSpecs('with sandbox', 'sandbox=yes')
+    generateSpecs('with nativeWindowOpen', 'nativeWindowOpen=yes')
+  })
+
+  describe('webpreferences attribute', () => {
+    it('can enable nodeintegration', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        src: `file://${fixtures}/pages/d.html`,
+        webpreferences: 'nodeIntegration'
+      })
+
+      const types = JSON.parse(message)
+      expect(types).to.include({
+        require: 'function',
+        module: 'object',
+        process: 'object'
+      })
+    })
+
+    it('can disable the remote module', async () => {
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        preload: `${fixtures}/module/preload-disable-remote.js`,
+        src: `file://${fixtures}/api/blank.html`,
+        webpreferences: 'enableRemoteModule=no'
+      })
+
+      const typeOfRemote = JSON.parse(message)
+      expect(typeOfRemote).to.equal('undefined')
+    })
+
+    it('can disables web security and enable nodeintegration', async () => {
+      const jqueryPath = path.join(__dirname, '/static/jquery-2.0.3.min.js')
+      const src = `<script src='file://${jqueryPath}'></script> <script>console.log(typeof require);</script>`
+      const encoded = btoa(unescape(encodeURIComponent(src)))
+
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        src: `data:text/html;base64,${encoded}`,
+        webpreferences: 'webSecurity=no, nodeIntegration=yes'
+      })
+
+      expect(message).to.equal('function')
+    })
+
+    it('can enable context isolation', async () => {
+      loadWebView(webview, {
+        allowpopups: 'yes',
+        preload: path.join(fixtures, 'api', 'isolated-preload.js'),
+        src: `file://${fixtures}/api/isolated.html`,
+        webpreferences: 'contextIsolation=yes'
+      })
+
+      const [, data] = await emittedOnce(ipcMain, 'isolated-world')
+      assert.deepStrictEqual(data, {
+        preloadContext: {
+          preloadProperty: 'number',
+          pageProperty: 'undefined',
+          typeofRequire: 'function',
+          typeofProcess: 'object',
+          typeofArrayPush: 'function',
+          typeofFunctionApply: 'function',
+          typeofPreloadExecuteJavaScriptProperty: 'undefined'
+        },
+        pageContext: {
+          preloadProperty: 'undefined',
+          pageProperty: 'string',
+          typeofRequire: 'undefined',
+          typeofProcess: 'undefined',
+          typeofArrayPush: 'number',
+          typeofFunctionApply: 'boolean',
+          typeofPreloadExecuteJavaScriptProperty: 'number',
+          typeofOpenedWindow: 'object'
         }
-        webview.addEventListener('did-finish-load', listener)
-        webview.setAttribute('nodeintegration', 'on')
-        webview.src = 'file://' + fixtures + '/pages/native-module.html'
-        document.body.appendChild(webview)
       })
-    }
+    })
   })
 
-  describe('preload attribute', function () {
-    it('loads the script before other scripts in window', function (done) {
-      var listener = function (e) {
-        assert.equal(e.message, 'function object object')
-        webview.removeEventListener('console-message', listener)
-        done()
-      }
-      webview.addEventListener('console-message', listener)
-      webview.setAttribute('preload', fixtures + '/module/preload.js')
-      webview.src = 'file://' + fixtures + '/pages/e.html'
-      document.body.appendChild(webview)
-    })
-
-    it('preload script can still use "process" in required modules when nodeintegration is off', function (done) {
-      webview.addEventListener('console-message', function (e) {
-        assert.equal(e.message, 'object undefined object')
-        done()
+  describe('new-window event', () => {
+    it('emits when window.open is called', async () => {
+      loadWebView(webview, {
+        src: `file://${fixtures}/pages/window-open.html`
       })
-      webview.setAttribute('preload', fixtures + '/module/preload-node-off.js')
-      webview.src = 'file://' + fixtures + '/api/blank.html'
-      document.body.appendChild(webview)
+      const { url, frameName } = await waitForEvent(webview, 'new-window')
+
+      assert.strictEqual(url, 'http://host/')
+      assert.strictEqual(frameName, 'host')
     })
 
-    it('receives ipc message in preload script', function (done) {
-      var message = 'boom!'
-      var listener = function (e) {
-        assert.equal(e.channel, 'pong')
-        assert.deepEqual(e.args, [message])
-        webview.removeEventListener('ipc-message', listener)
-        done()
-      }
-      var listener2 = function () {
-        webview.send('ping', message)
-        webview.removeEventListener('did-finish-load', listener2)
-      }
-      webview.addEventListener('ipc-message', listener)
-      webview.addEventListener('did-finish-load', listener2)
-      webview.setAttribute('preload', fixtures + '/module/preload-ipc.js')
-      webview.src = 'file://' + fixtures + '/pages/e.html'
-      document.body.appendChild(webview)
-    })
-
-    it('works without script tag in page', function (done) {
-      var listener = function (e) {
-        assert.equal(e.message, 'function object object')
-        webview.removeEventListener('console-message', listener)
-        done()
-      }
-      webview.addEventListener('console-message', listener)
-      webview.setAttribute('preload', fixtures + '/module/preload.js')
-      webview.src = 'file://' + fixtures + '/pages/base-page.html'
-      document.body.appendChild(webview)
-    })
-
-    it('resolves relative URLs', function (done) {
-      var listener = function (e) {
-        assert.equal(e.message, 'function object object')
-        webview.removeEventListener('console-message', listener)
-        done()
-      }
-      webview.addEventListener('console-message', listener)
-      webview.src = 'file://' + fixtures + '/pages/e.html'
-      webview.preload = '../fixtures/module/preload.js'
-      document.body.appendChild(webview)
-    })
-
-    it('ignores empty values', function () {
-      assert.equal(webview.preload, '')
-      webview.preload = ''
-      assert.equal(webview.preload, '')
-      webview.preload = null
-      assert.equal(webview.preload, '')
-      webview.preload = undefined
-      assert.equal(webview.preload, '')
-    })
-  })
-
-  describe('httpreferrer attribute', function () {
-    it('sets the referrer url', function (done) {
-      var referrer = 'http://github.com/'
-      var listener = function (e) {
-        assert.equal(e.message, referrer)
-        webview.removeEventListener('console-message', listener)
-        done()
-      }
-      webview.addEventListener('console-message', listener)
-      webview.setAttribute('httpreferrer', referrer)
-      webview.src = 'file://' + fixtures + '/pages/referrer.html'
-      document.body.appendChild(webview)
-    })
-  })
-
-  describe('useragent attribute', function () {
-    it('sets the user agent', function (done) {
-      var referrer = 'Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; AS; rv:11.0) like Gecko'
-      var listener = function (e) {
-        assert.equal(e.message, referrer)
-        webview.removeEventListener('console-message', listener)
-        done()
-      }
-      webview.addEventListener('console-message', listener)
-      webview.setAttribute('useragent', referrer)
-      webview.src = 'file://' + fixtures + '/pages/useragent.html'
-      document.body.appendChild(webview)
-    })
-  })
-
-  describe('disablewebsecurity attribute', function () {
-    it('does not disable web security when not set', function (done) {
-      var jqueryPath = path.join(__dirname, '/static/jquery-2.0.3.min.js')
-      var src = `<script src='file://${jqueryPath}'></script> <script>console.log('ok');</script>`
-      var encoded = btoa(unescape(encodeURIComponent(src)))
-      var listener = function (e) {
-        assert(/Not allowed to load local resource/.test(e.message))
-        webview.removeEventListener('console-message', listener)
-        done()
-      }
-      webview.addEventListener('console-message', listener)
-      webview.src = 'data:text/html;base64,' + encoded
-      document.body.appendChild(webview)
-    })
-
-    it('disables web security when set', function (done) {
-      var jqueryPath = path.join(__dirname, '/static/jquery-2.0.3.min.js')
-      var src = `<script src='file://${jqueryPath}'></script> <script>console.log('ok');</script>`
-      var encoded = btoa(unescape(encodeURIComponent(src)))
-      var listener = function (e) {
-        assert.equal(e.message, 'ok')
-        webview.removeEventListener('console-message', listener)
-        done()
-      }
-      webview.addEventListener('console-message', listener)
-      webview.setAttribute('disablewebsecurity', '')
-      webview.src = 'data:text/html;base64,' + encoded
-      document.body.appendChild(webview)
-    })
-
-    it('does not break node integration', function (done) {
-      webview.addEventListener('console-message', function (e) {
-        assert.equal(e.message, 'function object object')
-        done()
+    it('emits when link with target is called', async () => {
+      loadWebView(webview, {
+        src: `file://${fixtures}/pages/target-name.html`
       })
-      webview.setAttribute('nodeintegration', 'on')
-      webview.setAttribute('disablewebsecurity', '')
-      webview.src = 'file://' + fixtures + '/pages/d.html'
-      document.body.appendChild(webview)
-    })
+      const { url, frameName } = await waitForEvent(webview, 'new-window')
 
-    it('does not break preload script', function (done) {
-      var listener = function (e) {
-        assert.equal(e.message, 'function object object')
-        webview.removeEventListener('console-message', listener)
-        done()
+      assert.strictEqual(url, 'http://host/')
+      assert.strictEqual(frameName, 'target')
+    })
+  })
+
+  describe('ipc-message event', () => {
+    it('emits when guest sends an ipc message to browser', async () => {
+      loadWebView(webview, {
+        nodeintegration: 'on',
+        src: `file://${fixtures}/pages/ipc-message.html`
+      })
+      const { channel, args } = await waitForEvent(webview, 'ipc-message')
+
+      assert.strictEqual(channel, 'channel')
+      assert.deepStrictEqual(args, ['arg1', 'arg2'])
+    })
+  })
+
+  describe('page-title-set event', () => {
+    it('emits when title is set', async () => {
+      loadWebView(webview, {
+        src: `file://${fixtures}/pages/a.html`
+      })
+      const { title, explicitSet } = await waitForEvent(webview, 'page-title-set')
+
+      assert.strictEqual(title, 'test')
+      assert(explicitSet)
+    })
+  })
+
+  describe('page-favicon-updated event', () => {
+    it('emits when favicon urls are received', async () => {
+      loadWebView(webview, {
+        src: `file://${fixtures}/pages/a.html`
+      })
+      const { favicons } = await waitForEvent(webview, 'page-favicon-updated')
+
+      assert(favicons)
+      assert.strictEqual(favicons.length, 2)
+      if (process.platform === 'win32') {
+        assert(/^file:\/\/\/[A-Z]:\/favicon.png$/i.test(favicons[0]))
+      } else {
+        assert.strictEqual(favicons[0], 'file:///favicon.png')
       }
-      webview.addEventListener('console-message', listener)
-      webview.setAttribute('disablewebsecurity', '')
-      webview.setAttribute('preload', fixtures + '/module/preload.js')
-      webview.src = 'file://' + fixtures + '/pages/e.html'
-      document.body.appendChild(webview)
     })
   })
 
-  describe('partition attribute', function () {
-    it('inserts no node symbols when not set', function (done) {
-      webview.addEventListener('console-message', function (e) {
-        assert.equal(e.message, 'undefined undefined undefined undefined')
-        done()
+  describe('will-navigate event', () => {
+    it('emits when a url that leads to oustide of the page is clicked', async () => {
+      loadWebView(webview, {
+        src: `file://${fixtures}/pages/webview-will-navigate.html`
       })
-      webview.src = 'file://' + fixtures + '/pages/c.html'
-      webview.partition = 'test1'
-      document.body.appendChild(webview)
-    })
+      const { url } = await waitForEvent(webview, 'will-navigate')
 
-    it('inserts node symbols when set', function (done) {
-      webview.addEventListener('console-message', function (e) {
-        assert.equal(e.message, 'function object object')
-        done()
-      })
-      webview.setAttribute('nodeintegration', 'on')
-      webview.src = 'file://' + fixtures + '/pages/d.html'
-      webview.partition = 'test2'
-      document.body.appendChild(webview)
-    })
-
-    it('isolates storage for different id', function (done) {
-      var listener = function (e) {
-        assert.equal(e.message, ' 0')
-        webview.removeEventListener('console-message', listener)
-        done()
-      }
-      window.localStorage.setItem('test', 'one')
-      webview.addEventListener('console-message', listener)
-      webview.src = 'file://' + fixtures + '/pages/partition/one.html'
-      webview.partition = 'test3'
-      document.body.appendChild(webview)
-    })
-
-    it('uses current session storage when no id is provided', function (done) {
-      var listener = function (e) {
-        assert.equal(e.message, 'one 1')
-        webview.removeEventListener('console-message', listener)
-        done()
-      }
-      window.localStorage.setItem('test', 'one')
-      webview.addEventListener('console-message', listener)
-      webview.src = 'file://' + fixtures + '/pages/partition/one.html'
-      document.body.appendChild(webview)
+      assert.strictEqual(url, 'http://host/')
     })
   })
 
-  describe('allowpopups attribute', function () {
-    if (process.env.TRAVIS === 'true' && process.platform === 'darwin') {
-      return
-    }
-
-    it('can not open new window when not set', function (done) {
-      var listener = function (e) {
-        assert.equal(e.message, 'null')
-        webview.removeEventListener('console-message', listener)
-        done()
-      }
-      webview.addEventListener('console-message', listener)
-      webview.src = 'file://' + fixtures + '/pages/window-open-hide.html'
-      document.body.appendChild(webview)
-    })
-
-    it('can open new window when set', function (done) {
-      var listener = function (e) {
-        assert.equal(e.message, 'window')
-        webview.removeEventListener('console-message', listener)
-        done()
-      }
-      webview.addEventListener('console-message', listener)
-      webview.setAttribute('allowpopups', 'on')
-      webview.src = 'file://' + fixtures + '/pages/window-open-hide.html'
-      document.body.appendChild(webview)
-    })
-  })
-
-  describe('webpreferences attribute', function () {
-    it('can enable nodeintegration', function (done) {
-      webview.addEventListener('console-message', function (e) {
-        assert.equal(e.message, 'function object object')
-        done()
-      })
-      webview.setAttribute('webpreferences', 'nodeIntegration')
-      webview.src = 'file://' + fixtures + '/pages/d.html'
-      document.body.appendChild(webview)
-    })
-
-    it('can disables web security and enable nodeintegration', function (done) {
-      var jqueryPath = path.join(__dirname, '/static/jquery-2.0.3.min.js')
-      var src = `<script src='file://${jqueryPath}'></script> <script>console.log('ok '+(typeof require));</script>`
-      var encoded = btoa(unescape(encodeURIComponent(src)))
-      var listener = function (e) {
-        assert.equal(e.message, 'ok function')
-        webview.removeEventListener('console-message', listener)
-        done()
-      }
-      webview.addEventListener('console-message', listener)
-      webview.setAttribute('webpreferences', 'webSecurity=no, nodeIntegration=yes')
-      webview.src = 'data:text/html;base64,' + encoded
-      document.body.appendChild(webview)
-    })
-  })
-
-  describe('new-window event', function () {
-    if (process.env.TRAVIS === 'true' && process.platform === 'darwin') {
-      return
-    }
-
-    it('emits when window.open is called', function (done) {
-      webview.addEventListener('new-window', function (e) {
-        assert.equal(e.url, 'http://host/')
-        assert.equal(e.frameName, 'host')
-        done()
-      })
-      webview.src = 'file://' + fixtures + '/pages/window-open.html'
-      document.body.appendChild(webview)
-    })
-
-    it('emits when link with target is called', function (done) {
-      webview.addEventListener('new-window', function (e) {
-        assert.equal(e.url, 'http://host/')
-        assert.equal(e.frameName, 'target')
-        done()
-      })
-      webview.src = 'file://' + fixtures + '/pages/target-name.html'
-      document.body.appendChild(webview)
-    })
-  })
-
-  describe('ipc-message event', function () {
-    it('emits when guest sends a ipc message to browser', function (done) {
-      webview.addEventListener('ipc-message', function (e) {
-        assert.equal(e.channel, 'channel')
-        assert.deepEqual(e.args, ['arg1', 'arg2'])
-        done()
-      })
-      webview.src = 'file://' + fixtures + '/pages/ipc-message.html'
-      webview.setAttribute('nodeintegration', 'on')
-      document.body.appendChild(webview)
-    })
-  })
-
-  describe('page-title-set event', function () {
-    it('emits when title is set', function (done) {
-      webview.addEventListener('page-title-set', function (e) {
-        assert.equal(e.title, 'test')
-        assert(e.explicitSet)
-        done()
-      })
-      webview.src = 'file://' + fixtures + '/pages/a.html'
-      document.body.appendChild(webview)
-    })
-  })
-
-  describe('page-favicon-updated event', function () {
-    it('emits when favicon urls are received', function (done) {
-      webview.addEventListener('page-favicon-updated', function (e) {
-        assert.equal(e.favicons.length, 2)
-        var pageUrl = process.platform === 'win32' ? 'file:///C:/favicon.png' : 'file:///favicon.png'
-        assert.equal(e.favicons[0], pageUrl)
-        done()
-      })
-      webview.src = 'file://' + fixtures + '/pages/a.html'
-      document.body.appendChild(webview)
-    })
-  })
-
-  describe('will-navigate event', function () {
-    it('emits when a url that leads to oustide of the page is clicked', function (done) {
-      webview.addEventListener('will-navigate', function (e) {
-        assert.equal(e.url, 'http://host/')
-        done()
-      })
-      webview.src = 'file://' + fixtures + '/pages/webview-will-navigate.html'
-      document.body.appendChild(webview)
-    })
-  })
-
-  describe('did-navigate event', function () {
-    var p = path.join(fixtures, 'pages', 'webview-will-navigate.html')
+  describe('did-navigate event', () => {
+    let p = path.join(fixtures, 'pages', 'webview-will-navigate.html')
     p = p.replace(/\\/g, '/')
-    var pageUrl = url.format({
+    const pageUrl = url.format({
       protocol: 'file',
       slashes: true,
       pathname: p
     })
 
-    it('emits when a url that leads to outside of the page is clicked', function (done) {
-      webview.addEventListener('did-navigate', function (e) {
-        assert.equal(e.url, pageUrl)
-        done()
-      })
-      webview.src = pageUrl
-      document.body.appendChild(webview)
+    it('emits when a url that leads to outside of the page is clicked', async () => {
+      loadWebView(webview, { src: pageUrl })
+      const { url } = await waitForEvent(webview, 'did-navigate')
+
+      assert.strictEqual(url, pageUrl)
     })
   })
 
-  describe('did-navigate-in-page event', function () {
-    it('emits when an anchor link is clicked', function (done) {
-      var p = path.join(fixtures, 'pages', 'webview-did-navigate-in-page.html')
+  describe('did-navigate-in-page event', () => {
+    it('emits when an anchor link is clicked', async () => {
+      let p = path.join(fixtures, 'pages', 'webview-did-navigate-in-page.html')
       p = p.replace(/\\/g, '/')
-      var pageUrl = url.format({
+      const pageUrl = url.format({
         protocol: 'file',
         slashes: true,
         pathname: p
       })
-      webview.addEventListener('did-navigate-in-page', function (e) {
-        assert.equal(e.url, pageUrl + '#test_content')
-        done()
-      })
-      webview.src = pageUrl
-      document.body.appendChild(webview)
+      loadWebView(webview, { src: pageUrl })
+      const event = await waitForEvent(webview, 'did-navigate-in-page')
+      assert.strictEqual(event.url, `${pageUrl}#test_content`)
     })
 
-    it('emits when window.history.replaceState is called', function (done) {
-      webview.addEventListener('did-navigate-in-page', function (e) {
-        assert.equal(e.url, 'http://host/')
-        done()
+    it('emits when window.history.replaceState is called', async () => {
+      loadWebView(webview, {
+        src: `file://${fixtures}/pages/webview-did-navigate-in-page-with-history.html`
       })
-      webview.src = 'file://' + fixtures + '/pages/webview-did-navigate-in-page-with-history.html'
-      document.body.appendChild(webview)
+      const { url } = await waitForEvent(webview, 'did-navigate-in-page')
+      assert.strictEqual(url, 'http://host/')
     })
 
-    it('emits when window.location.hash is changed', function (done) {
-      var p = path.join(fixtures, 'pages', 'webview-did-navigate-in-page-with-hash.html')
+    it('emits when window.location.hash is changed', async () => {
+      let p = path.join(fixtures, 'pages', 'webview-did-navigate-in-page-with-hash.html')
       p = p.replace(/\\/g, '/')
-      var pageUrl = url.format({
+      const pageUrl = url.format({
         protocol: 'file',
         slashes: true,
         pathname: p
       })
-      webview.addEventListener('did-navigate-in-page', function (e) {
-        assert.equal(e.url, pageUrl + '#test')
-        done()
+      loadWebView(webview, { src: pageUrl })
+      const event = await waitForEvent(webview, 'did-navigate-in-page')
+      assert.strictEqual(event.url, `${pageUrl}#test`)
+    })
+  })
+
+  describe('close event', () => {
+    it('should fire when interior page calls window.close', async () => {
+      loadWebView(webview, { src: `file://${fixtures}/pages/close.html` })
+      await waitForEvent(webview, 'close')
+    })
+  })
+
+  // FIXME(zcbenz): Disabled because of moving to OOPIF webview.
+  xdescribe('setDevToolsWebContents() API', () => {
+    it('sets webContents of webview as devtools', async () => {
+      const webview2 = new WebView()
+      loadWebView(webview2)
+
+      // Setup an event handler for further usage.
+      const waitForDomReady = waitForEvent(webview2, 'dom-ready')
+
+      loadWebView(webview, { src: 'about:blank' })
+      await waitForEvent(webview, 'dom-ready')
+      webview.getWebContents().setDevToolsWebContents(webview2.getWebContents())
+      webview.getWebContents().openDevTools()
+
+      await waitForDomReady
+
+      // Its WebContents should be a DevTools.
+      const devtools = webview2.getWebContents()
+      assert.ok(devtools.getURL().startsWith('devtools://devtools'))
+
+      const name = await devtools.executeJavaScript('InspectorFrontendHost.constructor.name')
+      document.body.removeChild(webview2)
+
+      expect(name).to.be.equal('InspectorFrontendHostImpl')
+    })
+  })
+
+  describe('devtools-opened event', () => {
+    it('should fire when webview.openDevTools() is called', async () => {
+      loadWebView(webview, {
+        src: `file://${fixtures}/pages/base-page.html`
       })
-      webview.src = pageUrl
-      document.body.appendChild(webview)
+      await waitForEvent(webview, 'dom-ready')
+
+      webview.openDevTools()
+      await waitForEvent(webview, 'devtools-opened')
+
+      webview.closeDevTools()
     })
   })
 
-  describe('close event', function () {
-    it('should fire when interior page calls window.close', function (done) {
-      webview.addEventListener('close', function () {
-        done()
+  describe('devtools-closed event', () => {
+    it('should fire when webview.closeDevTools() is called', async () => {
+      loadWebView(webview, {
+        src: `file://${fixtures}/pages/base-page.html`
       })
-      webview.src = 'file://' + fixtures + '/pages/close.html'
-      document.body.appendChild(webview)
+      await waitForEvent(webview, 'dom-ready')
+
+      webview.openDevTools()
+      await waitForEvent(webview, 'devtools-opened')
+
+      webview.closeDevTools()
+      await waitForEvent(webview, 'devtools-closed')
     })
   })
 
-  describe('devtools-opened event', function () {
-    it('should fire when webview.openDevTools() is called', function (done) {
-      var listener = function () {
-        webview.removeEventListener('devtools-opened', listener)
-        webview.closeDevTools()
-        done()
-      }
-      webview.addEventListener('devtools-opened', listener)
-      webview.addEventListener('dom-ready', function () {
-        webview.openDevTools()
+  describe('devtools-focused event', () => {
+    it('should fire when webview.openDevTools() is called', async () => {
+      loadWebView(webview, {
+        src: `file://${fixtures}/pages/base-page.html`
       })
-      webview.src = 'file://' + fixtures + '/pages/base-page.html'
-      document.body.appendChild(webview)
+
+      const waitForDevToolsFocused = waitForEvent(webview, 'devtools-focused')
+
+      await waitForEvent(webview, 'dom-ready')
+      webview.openDevTools()
+
+      await waitForDevToolsFocused
+      webview.closeDevTools()
     })
   })
 
-  describe('devtools-closed event', function () {
-    it('should fire when webview.closeDevTools() is called', function (done) {
-      var listener2 = function () {
-        webview.removeEventListener('devtools-closed', listener2)
-        done()
-      }
-      var listener = function () {
-        webview.removeEventListener('devtools-opened', listener)
-        webview.closeDevTools()
-      }
-      webview.addEventListener('devtools-opened', listener)
-      webview.addEventListener('devtools-closed', listener2)
-      webview.addEventListener('dom-ready', function () {
-        webview.openDevTools()
+  describe('<webview>.reload()', () => {
+    it('should emit beforeunload handler', async () => {
+      await loadWebView(webview, {
+        nodeintegration: 'on',
+        src: `file://${fixtures}/pages/beforeunload-false.html`
       })
-      webview.src = 'file://' + fixtures + '/pages/base-page.html'
-      document.body.appendChild(webview)
+
+      // Event handler has to be added before reload.
+      const waitForOnbeforeunload = waitForEvent(webview, 'ipc-message')
+
+      webview.reload()
+
+      const { channel } = await waitForOnbeforeunload
+      assert.strictEqual(channel, 'onbeforeunload')
     })
   })
 
-  describe('devtools-focused event', function () {
-    it('should fire when webview.openDevTools() is called', function (done) {
-      var listener = function () {
-        webview.removeEventListener('devtools-focused', listener)
-        webview.closeDevTools()
-        done()
-      }
-      webview.addEventListener('devtools-focused', listener)
-      webview.addEventListener('dom-ready', function () {
-        webview.openDevTools()
-      })
-      webview.src = 'file://' + fixtures + '/pages/base-page.html'
-      document.body.appendChild(webview)
-    })
-  })
-
-  describe('<webview>.reload()', function () {
-    it('should emit beforeunload handler', function (done) {
-      var listener = function (e) {
-        assert.equal(e.channel, 'onbeforeunload')
-        webview.removeEventListener('ipc-message', listener)
-        done()
-      }
-      var listener2 = function () {
-        webview.reload()
-        webview.removeEventListener('did-finish-load', listener2)
-      }
-      webview.addEventListener('ipc-message', listener)
-      webview.addEventListener('did-finish-load', listener2)
-      webview.setAttribute('nodeintegration', 'on')
-      webview.src = 'file://' + fixtures + '/pages/beforeunload-false.html'
-      document.body.appendChild(webview)
-    })
-  })
-
-  describe('<webview>.goForward()', function () {
-    it('should work after a replaced history entry', function (done) {
-      var loadCount = 1
-      var listener = function (e) {
+  describe('<webview>.goForward()', () => {
+    it('should work after a replaced history entry', (done) => {
+      let loadCount = 1
+      const listener = (e) => {
         if (loadCount === 1) {
-          assert.equal(e.channel, 'history')
-          assert.equal(e.args[0], 1)
+          assert.strictEqual(e.channel, 'history')
+          assert.strictEqual(e.args[0], 1)
           assert(!webview.canGoBack())
           assert(!webview.canGoForward())
         } else if (loadCount === 2) {
-          assert.equal(e.channel, 'history')
-          assert.equal(e.args[0], 2)
+          assert.strictEqual(e.channel, 'history')
+          assert.strictEqual(e.args[0], 2)
           assert(!webview.canGoBack())
           assert(webview.canGoForward())
           webview.removeEventListener('ipc-message', listener)
         }
       }
 
-      var loadListener = function (e) {
+      const loadListener = () => {
         if (loadCount === 1) {
-          webview.src = 'file://' + fixtures + '/pages/base-page.html'
+          webview.src = `file://${fixtures}/pages/base-page.html`
         } else if (loadCount === 2) {
           assert(webview.canGoBack())
           assert(!webview.canGoForward())
@@ -685,42 +918,43 @@ describe('<webview> tag', function () {
           done()
         }
 
-        loadCount++
+        loadCount += 1
       }
 
       webview.addEventListener('ipc-message', listener)
       webview.addEventListener('did-finish-load', loadListener)
-      webview.setAttribute('nodeintegration', 'on')
-      webview.src = 'file://' + fixtures + '/pages/history-replace.html'
-      document.body.appendChild(webview)
+
+      loadWebView(webview, {
+        nodeintegration: 'on',
+        src: `file://${fixtures}/pages/history-replace.html`
+      })
     })
   })
 
-  describe('<webview>.clearHistory()', function () {
-    it('should clear the navigation history', function (done) {
-      var listener = function (e) {
-        assert.equal(e.channel, 'history')
-        assert.equal(e.args[0], 2)
-        assert(webview.canGoBack())
-        webview.clearHistory()
-        assert(!webview.canGoBack())
-        webview.removeEventListener('ipc-message', listener)
-        done()
-      }
-      webview.addEventListener('ipc-message', listener)
-      webview.setAttribute('nodeintegration', 'on')
-      webview.src = 'file://' + fixtures + '/pages/history.html'
-      document.body.appendChild(webview)
+  describe('<webview>.clearHistory()', () => {
+    it('should clear the navigation history', async () => {
+      loadWebView(webview, {
+        nodeintegration: 'on',
+        src: `file://${fixtures}/pages/history.html`
+      })
+      const event = await waitForEvent(webview, 'ipc-message')
+
+      assert.strictEqual(event.channel, 'history')
+      assert.strictEqual(event.args[0], 2)
+      assert(webview.canGoBack())
+
+      webview.clearHistory()
+      assert(!webview.canGoBack())
     })
   })
 
-  describe('basic auth', function () {
-    var auth = require('basic-auth')
+  describe('basic auth', () => {
+    const auth = require('basic-auth')
 
-    it('should authenticate with correct credentials', function (done) {
-      var message = 'Authenticated'
-      var server = http.createServer(function (req, res) {
-        var credentials = auth(req)
+    it('should authenticate with correct credentials', (done) => {
+      const message = 'Authenticated'
+      const server = http.createServer((req, res) => {
+        const credentials = auth(req)
         if (credentials.name === 'test' && credentials.pass === 'test') {
           res.end(message)
         } else {
@@ -728,170 +962,200 @@ describe('<webview> tag', function () {
         }
         server.close()
       })
-      server.listen(0, '127.0.0.1', function () {
-        var port = server.address().port
-        webview.addEventListener('ipc-message', function (e) {
-          assert.equal(e.channel, message)
+      server.listen(0, '127.0.0.1', () => {
+        const port = server.address().port
+        webview.addEventListener('ipc-message', (e) => {
+          assert.strictEqual(e.channel, message)
           done()
         })
-        webview.src = 'file://' + fixtures + '/pages/basic-auth.html?port=' + port
-        webview.setAttribute('nodeintegration', 'on')
-        document.body.appendChild(webview)
+        loadWebView(webview, {
+          nodeintegration: 'on',
+          src: `file://${fixtures}/pages/basic-auth.html?port=${port}`
+        })
       })
     })
   })
 
-  describe('dom-ready event', function () {
-    it('emits when document is loaded', function (done) {
-      var server = http.createServer(function () {})
-      server.listen(0, '127.0.0.1', function () {
-        var port = server.address().port
-        webview.addEventListener('dom-ready', function () {
+  describe('dom-ready event', () => {
+    it('emits when document is loaded', (done) => {
+      const server = http.createServer(() => {})
+      server.listen(0, '127.0.0.1', () => {
+        const port = server.address().port
+        webview.addEventListener('dom-ready', () => {
           done()
         })
-        webview.src = 'file://' + fixtures + '/pages/dom-ready.html?port=' + port
-        document.body.appendChild(webview)
-      })
-    })
-
-    it('throws a custom error when an API method is called before the event is emitted', function () {
-      assert.throws(function () {
-        webview.stop()
-      }, 'Cannot call stop because the webContents is unavailable. The WebView must be attached to the DOM and the dom-ready event emitted before this method can be called.')
-    })
-  })
-
-  describe('executeJavaScript', function () {
-    it('should support user gesture', function (done) {
-      if (process.env.TRAVIS !== 'true' || process.platform === 'darwin') return done()
-
-      var listener = function () {
-        webview.removeEventListener('enter-html-full-screen', listener)
-        done()
-      }
-      var listener2 = function () {
-        var jsScript = "document.querySelector('video').webkitRequestFullscreen()"
-        webview.executeJavaScript(jsScript, true)
-        webview.removeEventListener('did-finish-load', listener2)
-      }
-      webview.addEventListener('enter-html-full-screen', listener)
-      webview.addEventListener('did-finish-load', listener2)
-      webview.src = 'file://' + fixtures + '/pages/fullscreen.html'
-      document.body.appendChild(webview)
-    })
-
-    it('can return the result of the executed script', function (done) {
-      if (process.env.TRAVIS === 'true' && process.platform === 'darwin') return done()
-
-      var listener = function () {
-        var jsScript = "'4'+2"
-        webview.executeJavaScript(jsScript, false, function (result) {
-          assert.equal(result, '42')
-          done()
-        })
-        webview.removeEventListener('did-finish-load', listener)
-      }
-      webview.addEventListener('did-finish-load', listener)
-      webview.src = 'about:blank'
-      document.body.appendChild(webview)
-    })
-  })
-
-  describe('sendInputEvent', function () {
-    it('can send keyboard event', function (done) {
-      webview.addEventListener('ipc-message', function (e) {
-        assert.equal(e.channel, 'keyup')
-        assert.deepEqual(e.args, ['C', 'KeyC', 67, true, false])
-        done()
-      })
-      webview.addEventListener('dom-ready', function () {
-        webview.sendInputEvent({
-          type: 'keyup',
-          keyCode: 'c',
-          modifiers: ['shift']
+        loadWebView(webview, {
+          src: `file://${fixtures}/pages/dom-ready.html?port=${port}`
         })
       })
-      webview.src = 'file://' + fixtures + '/pages/onkeyup.html'
-      webview.setAttribute('nodeintegration', 'on')
-      document.body.appendChild(webview)
     })
 
-    it('can send mouse event', function (done) {
-      webview.addEventListener('ipc-message', function (e) {
-        assert.equal(e.channel, 'mouseup')
-        assert.deepEqual(e.args, [10, 20, false, true])
-        done()
+    it('throws a custom error when an API method is called before the event is emitted', () => {
+      const expectedErrorMessage =
+          'The WebView must be attached to the DOM ' +
+          'and the dom-ready event emitted before this method can be called.'
+      expect(() => { webview.stop() }).to.throw(expectedErrorMessage)
+    })
+  })
+
+  describe('executeJavaScript', () => {
+    it('should support user gesture', async () => {
+      await loadWebView(webview, {
+        src: `file://${fixtures}/pages/fullscreen.html`
       })
-      webview.addEventListener('dom-ready', function () {
-        webview.sendInputEvent({
-          type: 'mouseup',
-          modifiers: ['ctrl'],
-          x: 10,
-          y: 20
+
+      // Event handler has to be added before js execution.
+      const waitForEnterHtmlFullScreen = waitForEvent(webview, 'enter-html-full-screen')
+
+      const jsScript = "document.querySelector('video').webkitRequestFullscreen()"
+      webview.executeJavaScript(jsScript, true)
+
+      return waitForEnterHtmlFullScreen
+    })
+
+    it('can return the result of the executed script', async () => {
+      await loadWebView(webview, {
+        src: 'about:blank'
+      })
+
+      const jsScript = "'4'+2"
+      const expectedResult = '42'
+
+      const result = await webview.executeJavaScript(jsScript)
+      assert.strictEqual(result, expectedResult)
+    })
+
+    // TODO(miniak): remove when promisification is complete
+    it('can return the result of the executed script (callback)', async () => {
+      await loadWebView(webview, {
+        src: 'about:blank'
+      })
+
+      const jsScript = "'4'+2"
+      const expectedResult = '42'
+
+      const result = await new Promise((resolve) => {
+        webview.executeJavaScript(jsScript, false, (result) => {
+          resolve(result)
         })
       })
-      webview.src = 'file://' + fixtures + '/pages/onmouseup.html'
-      webview.setAttribute('nodeintegration', 'on')
-      document.body.appendChild(webview)
+      assert.strictEqual(result, expectedResult)
     })
   })
 
-  describe('media-started-playing media-paused events', function () {
-    it('emits when audio starts and stops playing', function (done) {
-      var audioPlayed = false
-      webview.addEventListener('media-started-playing', function () {
-        audioPlayed = true
+  describe('sendInputEvent', () => {
+    it('can send keyboard event', async () => {
+      loadWebView(webview, {
+        nodeintegration: 'on',
+        src: `file://${fixtures}/pages/onkeyup.html`
       })
-      webview.addEventListener('media-paused', function () {
-        assert(audioPlayed)
-        done()
+      await waitForEvent(webview, 'dom-ready')
+
+      const waitForIpcMessage = waitForEvent(webview, 'ipc-message')
+      webview.sendInputEvent({
+        type: 'keyup',
+        keyCode: 'c',
+        modifiers: ['shift']
       })
-      webview.src = 'file://' + fixtures + '/pages/audio.html'
-      document.body.appendChild(webview)
+
+      const { channel, args } = await waitForIpcMessage
+      assert.strictEqual(channel, 'keyup')
+      assert.deepStrictEqual(args, ['C', 'KeyC', 67, true, false])
+    })
+
+    it('can send mouse event', async () => {
+      loadWebView(webview, {
+        nodeintegration: 'on',
+        src: `file://${fixtures}/pages/onmouseup.html`
+      })
+      await waitForEvent(webview, 'dom-ready')
+
+      const waitForIpcMessage = waitForEvent(webview, 'ipc-message')
+      webview.sendInputEvent({
+        type: 'mouseup',
+        modifiers: ['ctrl'],
+        x: 10,
+        y: 20
+      })
+
+      const { channel, args } = await waitForIpcMessage
+      assert.strictEqual(channel, 'mouseup')
+      assert.deepStrictEqual(args, [10, 20, false, true])
     })
   })
 
-  describe('found-in-page event', function () {
-    it('emits when a request is made', function (done) {
+  describe('media-started-playing media-paused events', () => {
+    it('emits when audio starts and stops playing', async () => {
+      await loadWebView(webview, { src: `file://${fixtures}/pages/base-page.html` })
+
+      // With the new autoplay policy, audio elements must be unmuted
+      // see https://goo.gl/xX8pDD.
+      const source = `
+        const audio = document.createElement("audio")
+        audio.src = "../assets/tone.wav"
+        document.body.appendChild(audio);
+        audio.play()
+      `
+      webview.executeJavaScript(source, true)
+      await waitForEvent(webview, 'media-started-playing')
+
+      webview.executeJavaScript('document.querySelector("audio").pause()', true)
+      await waitForEvent(webview, 'media-paused')
+    })
+  })
+
+  describe('found-in-page event', () => {
+    it('emits when a request is made', (done) => {
       let requestId = null
-      let activeMatchOrdinal = []
-      const listener = function (e) {
-        assert.equal(e.result.requestId, requestId)
-        assert.equal(e.result.matches, 3)
+      const activeMatchOrdinal = []
+      const listener = (e) => {
+        assert.strictEqual(e.result.requestId, requestId)
+        assert.strictEqual(e.result.matches, 3)
         activeMatchOrdinal.push(e.result.activeMatchOrdinal)
         if (e.result.activeMatchOrdinal === e.result.matches) {
-          assert.deepEqual(activeMatchOrdinal, [1, 2, 3])
+          assert.deepStrictEqual(activeMatchOrdinal, [1, 2, 3])
           webview.stopFindInPage('clearSelection')
           done()
         } else {
           listener2()
         }
       }
-      const listener2 = function () {
+      const listener2 = () => {
         requestId = webview.findInPage('virtual')
       }
       webview.addEventListener('found-in-page', listener)
       webview.addEventListener('did-finish-load', listener2)
-      webview.src = 'file://' + fixtures + '/pages/content.html'
-      document.body.appendChild(webview)
+      loadWebView(webview, { src: `file://${fixtures}/pages/content.html` })
+      // TODO(deepak1556): With https://codereview.chromium.org/2836973002
+      // focus of the webContents is required when triggering the api.
+      // Remove this workaround after determining the cause for
+      // incorrect focus.
+      webview.focus()
     })
   })
 
-  xdescribe('did-change-theme-color event', function () {
-    it('emits when theme color changes', function (done) {
-      webview.addEventListener('did-change-theme-color', function () {
-        done()
+  describe('did-change-theme-color event', () => {
+    it('emits when theme color changes', async () => {
+      loadWebView(webview, {
+        src: `file://${fixtures}/pages/theme-color.html`
       })
-      webview.src = 'file://' + fixtures + '/pages/theme-color.html'
-      document.body.appendChild(webview)
+      await waitForEvent(webview, 'did-change-theme-color')
     })
   })
 
-  describe('permission-request event', function () {
+  describe('permission-request event', () => {
     function setUpRequestHandler (webview, requestedPermission, completed) {
-      var listener = function (webContents, permission, callback) {
-        if (webContents.getId() === webview.getId()) {
-          assert.equal(permission, requestedPermission)
+      assert.ok(webview.partition)
+
+      const listener = function (webContents, permission, callback) {
+        if (webContents.id === webview.getWebContentsId()) {
+          // requestMIDIAccess with sysex requests both midi and midiSysex so
+          // grant the first midi one and then reject the midiSysex one
+          if (requestedPermission === 'midiSysex' && permission === 'midi') {
+            return callback(true)
+          }
+
+          assert.strictEqual(permission, requestedPermission)
           callback(false)
           if (completed) completed()
         }
@@ -899,420 +1163,327 @@ describe('<webview> tag', function () {
       session.fromPartition(webview.partition).setPermissionRequestHandler(listener)
     }
 
-    it('emits when using navigator.getUserMedia api', function (done) {
-      webview.addEventListener('ipc-message', function (e) {
-        assert.equal(e.channel, 'message')
-        assert.deepEqual(e.args, ['PermissionDeniedError'])
+    it('emits when using navigator.getUserMedia api', (done) => {
+      if (isCI) return done()
+
+      webview.addEventListener('ipc-message', (e) => {
+        assert.strictEqual(e.channel, 'message')
+        assert.deepStrictEqual(e.args, ['PermissionDeniedError'])
         done()
       })
-      webview.src = 'file://' + fixtures + '/pages/permissions/media.html'
+      webview.src = `file://${fixtures}/pages/permissions/media.html`
       webview.partition = 'permissionTest'
       webview.setAttribute('nodeintegration', 'on')
       setUpRequestHandler(webview, 'media')
       document.body.appendChild(webview)
     })
 
-    it('emits when using navigator.geolocation api', function (done) {
-      webview.addEventListener('ipc-message', function (e) {
-        assert.equal(e.channel, 'message')
-        assert.deepEqual(e.args, ['User denied Geolocation'])
+    it('emits when using navigator.geolocation api', (done) => {
+      webview.addEventListener('ipc-message', (e) => {
+        assert.strictEqual(e.channel, 'message')
+        assert.deepStrictEqual(e.args, ['User denied Geolocation'])
         done()
       })
-      webview.src = 'file://' + fixtures + '/pages/permissions/geolocation.html'
+      webview.src = `file://${fixtures}/pages/permissions/geolocation.html`
       webview.partition = 'permissionTest'
       webview.setAttribute('nodeintegration', 'on')
       setUpRequestHandler(webview, 'geolocation')
       document.body.appendChild(webview)
     })
 
-    it('emits when using navigator.requestMIDIAccess api', function (done) {
-      webview.addEventListener('ipc-message', function (e) {
-        assert.equal(e.channel, 'message')
-        assert.deepEqual(e.args, ['SecurityError'])
+    it('emits when using navigator.requestMIDIAccess without sysex api', (done) => {
+      webview.addEventListener('ipc-message', (e) => {
+        assert.strictEqual(e.channel, 'message')
+        assert.deepStrictEqual(e.args, ['SecurityError'])
         done()
       })
-      webview.src = 'file://' + fixtures + '/pages/permissions/midi.html'
+      webview.src = `file://${fixtures}/pages/permissions/midi.html`
+      webview.partition = 'permissionTest'
+      webview.setAttribute('nodeintegration', 'on')
+      setUpRequestHandler(webview, 'midi')
+      document.body.appendChild(webview)
+    })
+
+    it('emits when using navigator.requestMIDIAccess with sysex api', (done) => {
+      webview.addEventListener('ipc-message', (e) => {
+        assert.strictEqual(e.channel, 'message')
+        assert.deepStrictEqual(e.args, ['SecurityError'])
+        done()
+      })
+      webview.src = `file://${fixtures}/pages/permissions/midi-sysex.html`
       webview.partition = 'permissionTest'
       webview.setAttribute('nodeintegration', 'on')
       setUpRequestHandler(webview, 'midiSysex')
       document.body.appendChild(webview)
     })
 
-    it('emits when accessing external protocol', function (done) {
+    it('emits when accessing external protocol', (done) => {
       webview.src = 'magnet:test'
       webview.partition = 'permissionTest'
       setUpRequestHandler(webview, 'openExternal', done)
       document.body.appendChild(webview)
     })
 
-    it('emits when using Notification.requestPermission', function (done) {
-      webview.addEventListener('ipc-message', function (e) {
-        assert.equal(e.channel, 'message')
-        assert.deepEqual(e.args, ['granted'])
+    it('emits when using Notification.requestPermission', (done) => {
+      webview.addEventListener('ipc-message', (e) => {
+        assert.strictEqual(e.channel, 'message')
+        assert.deepStrictEqual(e.args, ['granted'])
         done()
       })
-      webview.src = 'file://' + fixtures + '/pages/permissions/notification.html'
+      webview.src = `file://${fixtures}/pages/permissions/notification.html`
       webview.partition = 'permissionTest'
       webview.setAttribute('nodeintegration', 'on')
-      session.fromPartition(webview.partition).setPermissionRequestHandler(function (webContents, permission, callback) {
-        if (webContents.getId() === webview.getId()) {
-          assert.equal(permission, 'notifications')
-          setTimeout(function () {
-            callback(true)
-          }, 10)
+      session.fromPartition(webview.partition).setPermissionRequestHandler((webContents, permission, callback) => {
+        if (webContents.id === webview.getWebContentsId()) {
+          assert.strictEqual(permission, 'notifications')
+          setTimeout(() => { callback(true) }, 10)
         }
       })
       document.body.appendChild(webview)
     })
   })
 
-  describe('<webview>.getWebContents', function () {
-    it('can return the webcontents associated', function (done) {
-      webview.addEventListener('did-finish-load', function () {
-        const webviewContents = webview.getWebContents()
-        assert(webviewContents)
-        assert.equal(webviewContents.getURL(), 'about:blank')
+  describe('<webview>.getWebContentsId', () => {
+    it('can return the WebContents ID', async () => {
+      const src = 'about:blank'
+      await loadWebView(webview, { src })
+
+      expect(webview.getWebContentsId()).to.be.equal(webview.getWebContents().id)
+    })
+  })
+
+  describe('<webview>.getWebContents', () => {
+    it('can return the webcontents associated', async () => {
+      const src = 'about:blank'
+      await loadWebView(webview, { src })
+
+      const webviewContents = webview.getWebContents()
+      assert(webviewContents)
+      expect(webviewContents.getURL()).to.equal(src)
+    })
+  })
+
+  describe('<webview>.getWebContents filtering', () => {
+    it('can return custom value', async () => {
+      const src = 'about:blank'
+      await loadWebView(webview, { src })
+
+      ipcRenderer.send('handle-next-remote-get-guest-web-contents', 'Hello World!')
+      expect(webview.getWebContents()).to.be.equal('Hello World!')
+    })
+
+    it('throws when no returnValue set', async () => {
+      const src = 'about:blank'
+      await loadWebView(webview, { src })
+
+      ipcRenderer.send('handle-next-remote-get-guest-web-contents')
+      expect(() => webview.getWebContents()).to.throw('Blocked remote.getGuestForWebContents()')
+    })
+  })
+
+  describe('<webview>.capturePage()', () => {
+    before(function () {
+      // TODO(miniak): figure out why this is failing on windows
+      if (process.platform === 'win32') {
+        this.skip()
+      }
+    })
+
+    it('returns a Promise with a NativeImage', async () => {
+      const src = 'data:text/html,%3Ch1%3EHello%2C%20World!%3C%2Fh1%3E'
+      await loadWebView(webview, { src })
+
+      const image = await webview.capturePage()
+      const imgBuffer = image.toPNG()
+
+      // Check the 25th byte in the PNG.
+      // Values can be 0,2,3,4, or 6. We want 6, which is RGB + Alpha
+      expect(imgBuffer[25]).to.equal(6)
+    })
+
+    // TODO(miniak): remove when promisification is complete
+    it('invokes callback with a NativeImage', (done) => {
+      webview.addEventListener('did-finish-load', () => {
+        webview.capturePage(function (image) {
+          const imgBuffer = image.toPNG()
+
+          // Check the 25th byte in the PNG.
+          // Values can be 0,2,3,4, or 6. We want 6, which is RGB + Alpha
+          expect(imgBuffer[25]).to.equal(6)
+          done()
+        })
+      })
+
+      webview.src = 'data:text/html,%3Ch1%3EHello%2C%20World!%3C%2Fh1%3E'
+      document.body.appendChild(webview)
+    })
+  })
+
+  describe('<webview>.printToPDF()', () => {
+    before(function () {
+      if (!features.isPrintingEnabled()) {
+        this.skip()
+      }
+    })
+
+    it('can print to PDF', async () => {
+      const src = 'data:text/html,%3Ch1%3EHello%2C%20World!%3C%2Fh1%3E'
+      await loadWebView(webview, { src })
+
+      const data = await webview.printToPDF({})
+      assert.strictEqual(data instanceof Buffer, true)
+      assert.notStrictEqual(data.length, 0)
+    })
+
+    // TODO(miniak): remove when promisification is complete
+    it('can print to PDF (callback)', (done) => {
+      webview.addEventListener('did-finish-load', () => {
+        webview.printToPDF({}, function (error, data) {
+          assert.strictEqual(error, null)
+          assert.strictEqual(data instanceof Buffer, true)
+          assert.notStrictEqual(data.length, 0)
+          done()
+        })
+      })
+
+      webview.src = 'data:text/html,%3Ch1%3EHello%2C%20World!%3C%2Fh1%3E'
+      document.body.appendChild(webview)
+    })
+  })
+
+  // FIXME(deepak1556): Ch69 follow up.
+  xdescribe('document.visibilityState/hidden', () => {
+    afterEach(() => {
+      ipcMain.removeAllListeners('pong')
+    })
+
+    it('updates when the window is shown after the ready-to-show event', async () => {
+      const w = await openTheWindow({ show: false })
+      const readyToShowSignal = emittedOnce(w, 'ready-to-show')
+      const pongSignal1 = emittedOnce(ipcMain, 'pong')
+      w.loadFile(path.join(fixtures, 'pages', 'webview-visibilitychange.html'))
+      await pongSignal1
+      const pongSignal2 = emittedOnce(ipcMain, 'pong')
+      await readyToShowSignal
+      w.show()
+
+      const [, visibilityState, hidden] = await pongSignal2
+      assert(!hidden)
+      assert.strictEqual(visibilityState, 'visible')
+    })
+
+    it('inherits the parent window visibility state and receives visibilitychange events', async () => {
+      const w = await openTheWindow({ show: false })
+      w.loadFile(path.join(fixtures, 'pages', 'webview-visibilitychange.html'))
+      const [, visibilityState, hidden] = await emittedOnce(ipcMain, 'pong')
+      assert.strictEqual(visibilityState, 'hidden')
+      assert.strictEqual(hidden, true)
+
+      // We have to start waiting for the event
+      // before we ask the webContents to resize.
+      const getResponse = emittedOnce(ipcMain, 'pong')
+      w.webContents.emit('-window-visibility-change', 'visible')
+
+      return getResponse.then(([, visibilityState, hidden]) => {
+        assert.strictEqual(visibilityState, 'visible')
+        assert.strictEqual(hidden, false)
+      })
+    })
+  })
+
+  describe('will-attach-webview event', () => {
+    it('does not emit when src is not changed', (done) => {
+      loadWebView(webview)
+      setTimeout(() => {
+        const expectedErrorMessage =
+            'The WebView must be attached to the DOM ' +
+            'and the dom-ready event emitted before this method can be called.'
+        expect(() => { webview.stop() }).to.throw(expectedErrorMessage)
         done()
       })
-      webview.src = 'about:blank'
-      document.body.appendChild(webview)
+    })
+
+    it('supports changing the web preferences', async () => {
+      ipcRenderer.send('disable-node-on-next-will-attach-webview')
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        nodeintegration: 'yes',
+        src: `file://${fixtures}/pages/a.html`
+      })
+
+      const types = JSON.parse(message)
+      expect(types).to.include({
+        require: 'undefined',
+        module: 'undefined',
+        process: 'undefined',
+        global: 'undefined'
+      })
+    })
+
+    it('supports preventing a webview from being created', async () => {
+      ipcRenderer.send('prevent-next-will-attach-webview')
+
+      loadWebView(webview, {
+        src: `file://${fixtures}/pages/c.html`
+      })
+      await waitForEvent(webview, 'destroyed')
+    })
+
+    it('supports removing the preload script', async () => {
+      ipcRenderer.send('disable-preload-on-next-will-attach-webview')
+
+      const message = await startLoadingWebViewAndWaitForMessage(webview, {
+        nodeintegration: 'yes',
+        preload: path.join(fixtures, 'module', 'preload-set-global.js'),
+        src: `file://${fixtures}/pages/a.html`
+      })
+
+      assert.strictEqual(message, 'undefined')
     })
   })
 
-  describe('did-get-response-details event', function () {
-    it('emits for the page and its resources', function (done) {
-      // expected {fileName: resourceType} pairs
-      var expectedResources = {
-        'did-get-response-details.html': 'mainFrame',
-        'logo.png': 'image'
-      }
-      var responses = 0
-      webview.addEventListener('did-get-response-details', function (event) {
-        responses++
-        var fileName = event.newURL.slice(event.newURL.lastIndexOf('/') + 1)
-        var expectedType = expectedResources[fileName]
-        assert(!!expectedType, `Unexpected response details for ${event.newURL}`)
-        assert(typeof event.status === 'boolean', 'status should be boolean')
-        assert.equal(event.httpResponseCode, 200)
-        assert.equal(event.requestMethod, 'GET')
-        assert(typeof event.referrer === 'string', 'referrer should be string')
-        assert(!!event.headers, 'headers should be present')
-        assert(typeof event.headers === 'object', 'headers should be object')
-        assert.equal(event.resourceType, expectedType, 'Incorrect resourceType')
-        if (responses === Object.keys(expectedResources).length) {
-          done()
+  describe('did-attach-webview event', () => {
+    it('is emitted when a webview has been attached', async () => {
+      const w = await openTheWindow({
+        show: false,
+        webPreferences: {
+          webviewTag: true,
+          nodeIntegration: true
         }
       })
-      webview.src = 'file://' + path.join(fixtures, 'pages', 'did-get-response-details.html')
-      document.body.appendChild(webview)
+      const didAttachWebview = emittedOnce(w.webContents, 'did-attach-webview')
+      const webviewDomReady = emittedOnce(ipcMain, 'webview-dom-ready')
+      w.loadFile(path.join(fixtures, 'pages', 'webview-did-attach-event.html'))
+
+      const [, webContents] = await didAttachWebview
+      const [, id] = await webviewDomReady
+      expect(webContents.id).to.equal(id)
     })
   })
 
-  it('inherits the zoomFactor of the parent window', function (done) {
-    w = new BrowserWindow({
+  it('loads devtools extensions registered on the parent window', async () => {
+    const w = await openTheWindow({
       show: false,
       webPreferences: {
-        zoomFactor: 1.2
+        webviewTag: true,
+        nodeIntegration: true
       }
     })
-    ipcMain.once('pong', function (event, zoomFactor, zoomLevel) {
-      assert.equal(zoomFactor, 1.2)
-      assert.equal(zoomLevel, 1)
-      done()
-    })
-    w.loadURL('file://' + fixtures + '/pages/webview-zoom-factor.html')
-  })
-
-  it('inherits the parent window visibility state and receives visibilitychange events', function (done) {
-    w = new BrowserWindow({
-      show: false
-    })
-
-    ipcMain.once('pong', function (event, visibilityState, hidden) {
-      assert.equal(visibilityState, 'hidden')
-      assert.equal(hidden, true)
-
-      w.webContents.send('ELECTRON_RENDERER_WINDOW_VISIBILITY_CHANGE', 'visible')
-
-      ipcMain.once('pong', function (event, visibilityState, hidden) {
-        assert.equal(visibilityState, 'visible')
-        assert.equal(hidden, false)
-        done()
-      })
-    })
-
-    w.loadURL('file://' + fixtures + '/pages/webview-visibilitychange.html')
-  })
-
-  it('loads devtools extensions registered on the parent window', function (done) {
-    w = new BrowserWindow({
-      show: false
-    })
-
     BrowserWindow.removeDevToolsExtension('foo')
 
-    var extensionPath = path.join(__dirname, 'fixtures', 'devtools-extensions', 'foo')
+    const extensionPath = path.join(__dirname, 'fixtures', 'devtools-extensions', 'foo')
     BrowserWindow.addDevToolsExtension(extensionPath)
 
-    w.loadURL('file://' + fixtures + '/pages/webview-devtools.html')
+    w.loadFile(path.join(fixtures, 'pages', 'webview-devtools.html'))
 
-    ipcMain.once('answer', function (event, message) {
-      assert.equal(message.runtimeId, 'foo')
-      assert.notEqual(message.tabId, w.webContents.id)
-      done()
-    })
+    const [, { runtimeId, tabId }] = await emittedOnce(ipcMain, 'answer')
+    expect(runtimeId).to.equal('foo')
+    expect(tabId).to.be.not.equal(w.webContents.id)
   })
 
-  describe('guestinstance attribute', function () {
-    it('before loading there is no attribute', function () {
-      document.body.appendChild(webview)
-      assert(!webview.hasAttribute('guestinstance'))
-    })
-
-    it('loading a page sets the guest view', function (done) {
-      var loadListener = function () {
-        webview.removeEventListener('did-finish-load', loadListener, false)
-        var instance = webview.getAttribute('guestinstance')
-        assert.equal(instance, parseInt(instance))
-
-        var guest = getGuestWebContents(parseInt(instance))
-        assert.equal(guest, webview.getWebContents())
-        done()
-      }
-      webview.addEventListener('did-finish-load', loadListener, false)
-      webview.src = 'file://' + fixtures + '/api/blank.html'
-      document.body.appendChild(webview)
-    })
-
-    it('deleting the attribute destroys the webview', function (done) {
-      var loadListener = function () {
-        webview.removeEventListener('did-finish-load', loadListener, false)
-        var destroyListener = function () {
-          webview.removeEventListener('destroyed', destroyListener, false)
-          assert.equal(getGuestWebContents(instance), null)
-          done()
-        }
-        webview.addEventListener('destroyed', destroyListener, false)
-
-        var instance = parseInt(webview.getAttribute('guestinstance'))
-        webview.removeAttribute('guestinstance')
-      }
-      webview.addEventListener('did-finish-load', loadListener, false)
-      webview.src = 'file://' + fixtures + '/api/blank.html'
-      document.body.appendChild(webview)
-    })
-
-    it('setting the attribute on a new webview moves the contents', function (done) {
-      var loadListener = function () {
-        webview.removeEventListener('did-finish-load', loadListener, false)
-        var webContents = webview.getWebContents()
-        var instance = webview.getAttribute('guestinstance')
-
-        var destroyListener = function () {
-          webview.removeEventListener('destroyed', destroyListener, false)
-          assert.equal(webContents, webview2.getWebContents())
-          // Make sure that events are hooked up to the right webview now
-          webview2.addEventListener('console-message', function (e) {
-            assert.equal(e.message, 'a')
-            document.body.removeChild(webview2)
-            done()
-          })
-
-          webview2.src = 'file://' + fixtures + '/pages/a.html'
-        }
-        webview.addEventListener('destroyed', destroyListener, false)
-
-        var webview2 = new WebView()
-        webview2.setAttribute('guestinstance', instance)
-        document.body.appendChild(webview2)
-      }
-      webview.addEventListener('did-finish-load', loadListener, false)
-      webview.src = 'file://' + fixtures + '/api/blank.html'
-      document.body.appendChild(webview)
-    })
-
-    it('setting the attribute to an invalid guestinstance does nothing', function (done) {
-      var loadListener = function () {
-        webview.removeEventListener('did-finish-load', loadListener, false)
-        webview.setAttribute('guestinstance', 55)
-
-        // Make sure that events are still hooked up to the webview
-        webview.addEventListener('console-message', function (e) {
-          assert.equal(e.message, 'a')
-          done()
-        })
-
-        webview.src = 'file://' + fixtures + '/pages/a.html'
-      }
-      webview.addEventListener('did-finish-load', loadListener, false)
-
-      webview.src = 'file://' + fixtures + '/api/blank.html'
-      document.body.appendChild(webview)
-    })
-
-    it('setting the attribute on an existing webview moves the contents', function (done) {
-      var load1Listener = function () {
-        webview.removeEventListener('did-finish-load', load1Listener, false)
-        var webContents = webview.getWebContents()
-        var instance = webview.getAttribute('guestinstance')
-        var destroyedInstance
-
-        var destroyListener = function () {
-          webview.removeEventListener('destroyed', destroyListener, false)
-          assert.equal(webContents, webview2.getWebContents())
-          assert.equal(null, getGuestWebContents(parseInt(destroyedInstance)))
-
-          // Make sure that events are hooked up to the right webview now
-          webview2.addEventListener('console-message', function (e) {
-            assert.equal(e.message, 'a')
-            document.body.removeChild(webview2)
-            done()
-          })
-
-          webview2.src = 'file://' + fixtures + '/pages/a.html'
-        }
-        webview.addEventListener('destroyed', destroyListener, false)
-
-        var webview2 = new WebView()
-        var load2Listener = function () {
-          webview2.removeEventListener('did-finish-load', load2Listener, false)
-          destroyedInstance = webview2.getAttribute('guestinstance')
-          assert.notEqual(instance, destroyedInstance)
-
-          webview2.setAttribute('guestinstance', instance)
-        }
-        webview2.addEventListener('did-finish-load', load2Listener, false)
-        webview2.src = 'file://' + fixtures + '/api/blank.html'
-        document.body.appendChild(webview2)
-      }
-      webview.addEventListener('did-finish-load', load1Listener, false)
-      webview.src = 'file://' + fixtures + '/api/blank.html'
-      document.body.appendChild(webview)
-    })
-
-    it('moving a guest back to its original webview should work', function (done) {
-      var loadListener = function () {
-        webview.removeEventListener('did-finish-load', loadListener, false)
-        var webContents = webview.getWebContents()
-        var instance = webview.getAttribute('guestinstance')
-
-        var destroy1Listener = function () {
-          webview.removeEventListener('destroyed', destroy1Listener, false)
-          assert.equal(webContents, webview2.getWebContents())
-          assert.equal(null, webview.getWebContents())
-
-          var destroy2Listener = function () {
-            webview2.removeEventListener('destroyed', destroy2Listener, false)
-            assert.equal(webContents, webview.getWebContents())
-            assert.equal(null, webview2.getWebContents())
-
-            // Make sure that events are hooked up to the right webview now
-            webview.addEventListener('console-message', function (e) {
-              assert.equal(e.message, 'a')
-              document.body.removeChild(webview2)
-              done()
-            })
-
-            webview.src = 'file://' + fixtures + '/pages/a.html'
-          }
-          webview2.addEventListener('destroyed', destroy2Listener, false)
-
-          webview.setAttribute('guestinstance', instance)
-        }
-        webview.addEventListener('destroyed', destroy1Listener, false)
-
-        var webview2 = new WebView()
-        webview2.setAttribute('guestinstance', instance)
-        document.body.appendChild(webview2)
-      }
-      webview.addEventListener('did-finish-load', loadListener, false)
-      webview.src = 'file://' + fixtures + '/api/blank.html'
-      document.body.appendChild(webview)
-    })
-
-    it('setting the attribute on a webview in a different window moves the contents', function (done) {
-      var loadListener = function () {
-        webview.removeEventListener('did-finish-load', loadListener, false)
-        var instance = webview.getAttribute('guestinstance')
-
-        w = new BrowserWindow({ show: false })
-        w.webContents.once('did-finish-load', function () {
-          ipcMain.once('pong', function () {
-            assert(!webview.hasAttribute('guestinstance'))
-
-            done()
-          })
-
-          w.webContents.send('guestinstance', instance)
-        })
-        w.loadURL('file://' + fixtures + '/pages/webview-move-to-window.html')
-      }
-      webview.addEventListener('did-finish-load', loadListener, false)
-      webview.src = 'file://' + fixtures + '/api/blank.html'
-      document.body.appendChild(webview)
-    })
-
-    it('does not delete the guestinstance attribute when moving the webview to another parent node', function (done) {
-      webview.addEventListener('dom-ready', function domReadyListener () {
-        webview.addEventListener('did-attach', function () {
-          assert(webview.guestinstance != null)
-          assert(webview.getWebContents() != null)
-          done()
-        })
-
-        document.body.replaceChild(webview, div)
-      })
-      webview.src = 'file://' + fixtures + '/pages/a.html'
-
-      const div = document.createElement('div')
-      div.appendChild(webview)
-      document.body.appendChild(div)
-    })
-
-    it('does not destroy the webContents when hiding/showing the webview (regression)', function (done) {
-      webview.addEventListener('dom-ready', function domReadyListener () {
-        const instance = webview.getAttribute('guestinstance')
-        assert(instance != null)
-
-        // Wait for event directly since attach happens asynchronously over IPC
-        ipcMain.once('ELECTRON_GUEST_VIEW_MANAGER_ATTACH_GUEST', function () {
-          assert(webview.getWebContents() != null)
-          assert.equal(instance, webview.getAttribute('guestinstance'))
-          done()
-        })
-
-        webview.style.display = 'none'
-        webview.offsetHeight
-        webview.style.display = 'block'
-      })
-      webview.src = 'file://' + fixtures + '/pages/a.html'
-      document.body.appendChild(webview)
-    })
-
-    it('does not reload the webContents when hiding/showing the webview (regression)', function (done) {
-      webview.addEventListener('dom-ready', function domReadyListener () {
-        webview.addEventListener('did-start-loading', function () {
-          done(new Error('webview started loading unexpectedly'))
-        })
-
-        // Wait for event directly since attach happens asynchronously over IPC
-        webview.addEventListener('did-attach', function () {
-          done()
-        })
-
-        webview.style.display = 'none'
-        webview.offsetHeight
-        webview.style.display = 'block'
-      })
-      webview.src = 'file://' + fixtures + '/pages/a.html'
-      document.body.appendChild(webview)
-    })
-  })
-
-  describe('DOM events', function () {
+  describe('DOM events', () => {
     let div
 
-    beforeEach(function () {
+    beforeEach(() => {
       div = document.createElement('div')
       div.style.width = '100px'
       div.style.height = '10px'
@@ -1321,139 +1492,249 @@ describe('<webview> tag', function () {
       webview.style.width = '100%'
     })
 
-    afterEach(function () {
+    afterEach(() => {
       if (div != null) div.remove()
     })
 
-    it('emits resize events', function (done) {
-      webview.addEventListener('dom-ready', function () {
-        div.style.width = '1234px'
-        div.style.height = '789px'
-      })
+    const generateSpecs = (description, sandbox) => {
+      describe(description, () => {
+        it('emits resize events', async () => {
+          const firstResizeSignal = waitForEvent(webview, 'resize')
+          const domReadySignal = waitForEvent(webview, 'dom-ready')
 
-      webview.addEventListener('resize', function onResize (event) {
-        webview.removeEventListener('resize', onResize)
-        assert.equal(event.newWidth, 1234)
-        assert.equal(event.newHeight, 789)
-        assert.equal(event.target, webview)
-        done()
-      })
+          webview.src = `file://${fixtures}/pages/a.html`
+          webview.webpreferences = `sandbox=${sandbox ? 'yes' : 'no'}`
+          div.appendChild(webview)
+          document.body.appendChild(div)
 
-      webview.src = `file://${fixtures}/pages/a.html`
-      div.appendChild(webview)
-      document.body.appendChild(div)
+          const firstResizeEvent = await firstResizeSignal
+          expect(firstResizeEvent.target).to.equal(webview)
+          expect(firstResizeEvent.newWidth).to.equal(100)
+          expect(firstResizeEvent.newHeight).to.equal(10)
+
+          await domReadySignal
+
+          const secondResizeSignal = waitForEvent(webview, 'resize')
+
+          const newWidth = 1234
+          const newHeight = 789
+          div.style.width = `${newWidth}px`
+          div.style.height = `${newHeight}px`
+
+          const secondResizeEvent = await secondResizeSignal
+          expect(secondResizeEvent.target).to.equal(webview)
+          expect(secondResizeEvent.newWidth).to.equal(newWidth)
+          expect(secondResizeEvent.newHeight).to.equal(newHeight)
+        })
+
+        it('emits focus event', async () => {
+          const domReadySignal = waitForEvent(webview, 'dom-ready')
+          webview.src = `file://${fixtures}/pages/a.html`
+          webview.webpreferences = `sandbox=${sandbox ? 'yes' : 'no'}`
+          document.body.appendChild(webview)
+
+          await domReadySignal
+
+          // If this test fails, check if webview.focus() still works.
+          const focusSignal = waitForEvent(webview, 'focus')
+          webview.focus()
+
+          await focusSignal
+        })
+      })
+    }
+
+    generateSpecs('without sandbox', false)
+    generateSpecs('with sandbox', true)
+  })
+
+  describe('zoom behavior', () => {
+    const zoomScheme = remote.getGlobal('zoomScheme')
+    const webviewSession = session.fromPartition('webview-temp')
+
+    before((done) => {
+      const protocol = webviewSession.protocol
+      protocol.registerStringProtocol(zoomScheme, (request, callback) => {
+        callback('hello')
+      }, (error) => done(error))
+    })
+
+    after((done) => {
+      const protocol = webviewSession.protocol
+      protocol.unregisterProtocol(zoomScheme, (error) => done(error))
+    })
+
+    it('inherits the zoomFactor of the parent window', async () => {
+      const w = await openTheWindow({
+        show: false,
+        webPreferences: {
+          webviewTag: true,
+          nodeIntegration: true,
+          zoomFactor: 1.2
+        }
+      })
+      const zoomEventPromise = emittedOnce(ipcMain, 'webview-parent-zoom-level')
+      w.loadFile(path.join(fixtures, 'pages', 'webview-zoom-factor.html'))
+
+      const [, zoomFactor, zoomLevel] = await zoomEventPromise
+      expect(zoomFactor).to.equal(1.2)
+      expect(zoomLevel).to.equal(1)
+    })
+
+    it('maintains zoom level on navigation', async () => {
+      return openTheWindow({
+        show: false,
+        webPreferences: {
+          webviewTag: true,
+          nodeIntegration: true,
+          zoomFactor: 1.2
+        }
+      }).then((w) => {
+        const promise = new Promise((resolve) => {
+          ipcMain.on('webview-zoom-level', (event, zoomLevel, zoomFactor, newHost, final) => {
+            if (!newHost) {
+              expect(zoomFactor).to.equal(1.44)
+              expect(zoomLevel).to.equal(2.0)
+            } else {
+              expect(zoomFactor).to.equal(1.2)
+              expect(zoomLevel).to.equal(1)
+            }
+
+            if (final) {
+              resolve()
+            }
+          })
+        })
+
+        w.loadFile(path.join(fixtures, 'pages', 'webview-custom-zoom-level.html'))
+
+        return promise
+      })
+    })
+
+    it('maintains zoom level when navigating within same page', async () => {
+      return openTheWindow({
+        show: false,
+        webPreferences: {
+          webviewTag: true,
+          nodeIntegration: true,
+          zoomFactor: 1.2
+        }
+      }).then((w) => {
+        const promise = new Promise((resolve) => {
+          ipcMain.on('webview-zoom-in-page', (event, zoomLevel, zoomFactor, final) => {
+            expect(zoomFactor).to.equal(1.44)
+            expect(zoomLevel).to.equal(2.0)
+
+            if (final) {
+              resolve()
+            }
+          })
+        })
+
+        w.loadFile(path.join(fixtures, 'pages', 'webview-in-page-navigate.html'))
+
+        return promise
+      })
+    })
+
+    it('inherits zoom level for the origin when available', async () => {
+      const w = await openTheWindow({
+        show: false,
+        webPreferences: {
+          webviewTag: true,
+          nodeIntegration: true,
+          zoomFactor: 1.2
+        }
+      })
+      w.loadFile(path.join(fixtures, 'pages', 'webview-origin-zoom-level.html'))
+
+      const [, zoomLevel] = await emittedOnce(ipcMain, 'webview-origin-zoom-level')
+      expect(zoomLevel).to.equal(2.0)
     })
   })
 
-  describe('disableguestresize attribute', () => {
-    it('does not have attribute by default', () => {
-      document.body.appendChild(webview)
-      assert(!webview.hasAttribute('disableguestresize'))
+  describe('nativeWindowOpen option', () => {
+    beforeEach(() => {
+      webview.setAttribute('allowpopups', 'on')
+      webview.setAttribute('nodeintegration', 'on')
+      webview.setAttribute('webpreferences', 'nativeWindowOpen=1')
     })
 
-    it('resizes guest when attribute is not present', done => {
-      w = new BrowserWindow({show: false, width: 200, height: 200})
-      w.loadURL('file://' + fixtures + '/pages/webview-guest-resize.html')
-
-      w.webContents.once('did-finish-load', () => {
-        const CONTENT_SIZE = 300
-
-        const elementResizePromise = new Promise(resolve => {
-          ipcMain.once('webview-element-resize', (event, width, height) => {
-            assert.equal(width, CONTENT_SIZE)
-            assert.equal(height, CONTENT_SIZE)
-            resolve()
-          })
-        })
-
-        const guestResizePromise = new Promise(resolve => {
-          ipcMain.once('webview-guest-resize', (event, width, height) => {
-            assert.equal(width, CONTENT_SIZE)
-            assert.equal(height, CONTENT_SIZE)
-            resolve()
-          })
-        })
-
-        Promise.all([elementResizePromise, guestResizePromise]).then(() => done())
-
-        w.setContentSize(CONTENT_SIZE, CONTENT_SIZE)
+    it('opens window of about:blank with cross-scripting enabled', async () => {
+      // Don't wait for loading to finish.
+      loadWebView(webview, {
+        src: `file://${path.join(fixtures, 'api', 'native-window-open-blank.html')}`
       })
+
+      const [, content] = await emittedOnce(ipcMain, 'answer')
+      expect(content).to.equal('Hello')
     })
 
-    it('does not resize guest when attribute is present', done => {
-      w = new BrowserWindow({show: false, width: 200, height: 200})
-      w.loadURL('file://' + fixtures + '/pages/webview-no-guest-resize.html')
-
-      w.webContents.once('did-finish-load', () => {
-        const CONTENT_SIZE = 300
-
-        const elementResizePromise = new Promise(resolve => {
-          ipcMain.once('webview-element-resize', (event, width, height) => {
-            assert.equal(width, CONTENT_SIZE)
-            assert.equal(height, CONTENT_SIZE)
-            resolve()
-          })
-        })
-
-        const noGuestResizePromise = new Promise(resolve => {
-          const onGuestResize = (event, width, height) => {
-            done(new Error('Unexpected guest resize message'))
-          }
-          ipcMain.once('webview-guest-resize', onGuestResize)
-
-          setTimeout(() => {
-            ipcMain.removeListener('webview-guest-resize', onGuestResize)
-            resolve()
-          }, 500)
-        })
-
-        Promise.all([elementResizePromise, noGuestResizePromise]).then(() => done())
-
-        w.setContentSize(CONTENT_SIZE, CONTENT_SIZE)
+    it('opens window of same domain with cross-scripting enabled', async () => {
+      // Don't wait for loading to finish.
+      loadWebView(webview, {
+        src: `file://${path.join(fixtures, 'api', 'native-window-open-file.html')}`
       })
+
+      const [, content] = await emittedOnce(ipcMain, 'answer')
+      expect(content).to.equal('Hello')
     })
 
-    it('dispatches element resize event even when attribute is present', done => {
-      w = new BrowserWindow({show: false, width: 200, height: 200})
-      w.loadURL('file://' + fixtures + '/pages/webview-no-guest-resize.html')
+    it('returns null from window.open when allowpopups is not set', async () => {
+      webview.removeAttribute('allowpopups')
 
-      w.webContents.once('did-finish-load', () => {
-        const CONTENT_SIZE = 300
+      // Don't wait for loading to finish.
+      loadWebView(webview, {
+        src: `file://${path.join(fixtures, 'api', 'native-window-open-no-allowpopups.html')}`
+      })
 
-        ipcMain.once('webview-element-resize', (event, width, height) => {
-          assert.equal(width, CONTENT_SIZE)
+      const [, { windowOpenReturnedNull }] = await emittedOnce(ipcMain, 'answer')
+      expect(windowOpenReturnedNull).to.be.true()
+    })
+
+    it('blocks accessing cross-origin frames', async () => {
+      // Don't wait for loading to finish.
+      loadWebView(webview, {
+        src: `file://${path.join(fixtures, 'api', 'native-window-open-cross-origin.html')}`
+      })
+
+      const [, content] = await emittedOnce(ipcMain, 'answer')
+      const expectedContent =
+          'Blocked a frame with origin "file://" from accessing a cross-origin frame.'
+
+      expect(content).to.equal(expectedContent)
+    })
+
+    it('emits a new-window event', async () => {
+      // Don't wait for loading to finish.
+      loadWebView(webview, {
+        src: `file://${fixtures}/pages/window-open.html`
+      })
+      const { url, frameName } = await waitForEvent(webview, 'new-window')
+
+      expect(url).to.equal('http://host/')
+      expect(frameName).to.equal('host')
+    })
+
+    it('emits a browser-window-created event', async () => {
+      // Don't wait for loading to finish.
+      loadWebView(webview, {
+        src: `file://${fixtures}/pages/window-open.html`
+      })
+
+      await emittedOnce(app, 'browser-window-created')
+    })
+
+    it('emits a web-contents-created event', (done) => {
+      app.on('web-contents-created', function listener (event, contents) {
+        if (contents.getType() === 'window') {
+          app.removeListener('web-contents-created', listener)
           done()
-        })
-
-        w.setContentSize(CONTENT_SIZE, CONTENT_SIZE)
-      })
-    })
-
-    it('can be manually resized with setSize even when attribute is present', done => {
-      w = new BrowserWindow({show: false, width: 200, height: 200})
-      w.loadURL('file://' + fixtures + '/pages/webview-no-guest-resize.html')
-
-      w.webContents.once('did-finish-load', () => {
-        const GUEST_WIDTH = 10
-        const GUEST_HEIGHT = 20
-
-        ipcMain.once('webview-guest-resize', (event, width, height) => {
-          assert.equal(width, GUEST_WIDTH)
-          assert.equal(height, GUEST_HEIGHT)
-          done()
-        })
-
-        for (const wc of webContents.getAllWebContents()) {
-          if (wc.hostWebContents &&
-              wc.hostWebContents.id === w.webContents.id) {
-            wc.setSize({
-              normal: {
-                width: GUEST_WIDTH,
-                height: GUEST_HEIGHT
-              }
-            })
-          }
         }
+      })
+      loadWebView(webview, {
+        src: `file://${fixtures}/pages/window-open.html`
       })
     })
   })

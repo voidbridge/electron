@@ -6,10 +6,13 @@
 #define ATOM_BROWSER_ATOM_PERMISSION_MANAGER_H_
 
 #include <map>
+#include <memory>
 #include <vector>
 
 #include "base/callback.h"
-#include "content/public/browser/permission_manager.h"
+#include "base/containers/id_map.h"
+#include "base/values.h"
+#include "content/public/browser/permission_controller_delegate.h"
 
 namespace content {
 class WebContents;
@@ -17,42 +20,69 @@ class WebContents;
 
 namespace atom {
 
-class AtomPermissionManager : public content::PermissionManager {
+class AtomPermissionManager : public content::PermissionControllerDelegate {
  public:
   AtomPermissionManager();
   ~AtomPermissionManager() override;
 
-  using ResponseCallback =
-      base::Callback<void(blink::mojom::PermissionStatus)>;
-  using RequestHandler =
-      base::Callback<void(content::WebContents*,
-                          content::PermissionType,
-                          const ResponseCallback&)>;
+  using StatusCallback =
+      base::OnceCallback<void(blink::mojom::PermissionStatus)>;
+  using StatusesCallback = base::OnceCallback<void(
+      const std::vector<blink::mojom::PermissionStatus>&)>;
+  using RequestHandler = base::Callback<void(content::WebContents*,
+                                             content::PermissionType,
+                                             StatusCallback,
+                                             const base::Value&)>;
+  using CheckHandler = base::Callback<bool(content::WebContents*,
+                                           content::PermissionType,
+                                           const GURL& requesting_origin,
+                                           const base::Value&)>;
 
   // Handler to dispatch permission requests in JS.
   void SetPermissionRequestHandler(const RequestHandler& handler);
+  void SetPermissionCheckHandler(const CheckHandler& handler);
 
-  // content::PermissionManager:
-  int RequestPermission(
-      content::PermissionType permission,
-      content::RenderFrameHost* render_frame_host,
-      const GURL& requesting_origin,
-      const ResponseCallback& callback) override;
+  // content::PermissionControllerDelegate:
+  int RequestPermission(content::PermissionType permission,
+                        content::RenderFrameHost* render_frame_host,
+                        const GURL& requesting_origin,
+                        bool user_gesture,
+                        StatusCallback callback) override;
+  int RequestPermissionWithDetails(content::PermissionType permission,
+                                   content::RenderFrameHost* render_frame_host,
+                                   const GURL& requesting_origin,
+                                   bool user_gesture,
+                                   const base::DictionaryValue* details,
+                                   StatusCallback callback);
   int RequestPermissions(
       const std::vector<content::PermissionType>& permissions,
       content::RenderFrameHost* render_frame_host,
       const GURL& requesting_origin,
-      const base::Callback<void(
-      const std::vector<blink::mojom::PermissionStatus>&)>& callback) override;
+      bool user_gesture,
+      StatusesCallback callback) override;
+  int RequestPermissionsWithDetails(
+      const std::vector<content::PermissionType>& permissions,
+      content::RenderFrameHost* render_frame_host,
+      const GURL& requesting_origin,
+      bool user_gesture,
+      const base::DictionaryValue* details,
+      StatusesCallback callback);
+  blink::mojom::PermissionStatus GetPermissionStatusForFrame(
+      content::PermissionType permission,
+      content::RenderFrameHost* render_frame_host,
+      const GURL& requesting_origin) override;
+
+  bool CheckPermissionWithDetails(content::PermissionType permission,
+                                  content::RenderFrameHost* render_frame_host,
+                                  const GURL& requesting_origin,
+                                  const base::DictionaryValue* details) const;
 
  protected:
   void OnPermissionResponse(int request_id,
-                            const GURL& url,
-                            const ResponseCallback& callback,
+                            int permission_id,
                             blink::mojom::PermissionStatus status);
 
-  // content::PermissionManager:
-  void CancelPermissionRequest(int request_id) override;
+  // content::PermissionControllerDelegate:
   void ResetPermission(content::PermissionType permission,
                        const GURL& requesting_origin,
                        const GURL& embedding_origin) override;
@@ -60,28 +90,22 @@ class AtomPermissionManager : public content::PermissionManager {
       content::PermissionType permission,
       const GURL& requesting_origin,
       const GURL& embedding_origin) override;
-  void RegisterPermissionUsage(content::PermissionType permission,
-                               const GURL& requesting_origin,
-                               const GURL& embedding_origin) override;
   int SubscribePermissionStatusChange(
       content::PermissionType permission,
+      content::RenderFrameHost* render_frame_host,
       const GURL& requesting_origin,
-      const GURL& embedding_origin,
-      const base::Callback<void(blink::mojom::PermissionStatus)>& callback)
+      base::RepeatingCallback<void(blink::mojom::PermissionStatus)> callback)
       override;
   void UnsubscribePermissionStatusChange(int subscription_id) override;
 
  private:
-  struct RequestInfo {
-    int render_process_id;
-    ResponseCallback callback;
-  };
+  class PendingRequest;
+  using PendingRequestsMap = base::IDMap<std::unique_ptr<PendingRequest>>;
 
   RequestHandler request_handler_;
+  CheckHandler check_handler_;
 
-  std::map<int, RequestInfo> pending_requests_;
-
-  int request_id_;
+  PendingRequestsMap pending_requests_;
 
   DISALLOW_COPY_AND_ASSIGN(AtomPermissionManager);
 };

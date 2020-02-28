@@ -8,13 +8,16 @@
 
 namespace atom {
 
-AtomMenuModel::AtomMenuModel(Delegate* delegate)
-    : ui::SimpleMenuModel(delegate),
-      delegate_(delegate) {
+bool AtomMenuModel::Delegate::GetAcceleratorForCommandId(
+    int command_id,
+    ui::Accelerator* accelerator) const {
+  return GetAcceleratorForCommandIdWithParams(command_id, false, accelerator);
 }
 
-AtomMenuModel::~AtomMenuModel() {
-}
+AtomMenuModel::AtomMenuModel(Delegate* delegate)
+    : ui::SimpleMenuModel(delegate), delegate_(delegate) {}
+
+AtomMenuModel::~AtomMenuModel() {}
 
 void AtomMenuModel::SetRole(int index, const base::string16& role) {
   int command_id = GetCommandIdAt(index);
@@ -23,7 +26,7 @@ void AtomMenuModel::SetRole(int index, const base::string16& role) {
 
 base::string16 AtomMenuModel::GetRoleAt(int index) {
   int command_id = GetCommandIdAt(index);
-  if (ContainsKey(roles_, command_id))
+  if (base::ContainsKey(roles_, command_id))
     return roles_[command_id];
   else
     return base::string16();
@@ -40,9 +43,33 @@ bool AtomMenuModel::GetAcceleratorAtWithParams(
   return false;
 }
 
-void AtomMenuModel::MenuClosed() {
-  ui::SimpleMenuModel::MenuClosed();
-  FOR_EACH_OBSERVER(Observer, observers_, MenuClosed());
+bool AtomMenuModel::ShouldRegisterAcceleratorAt(int index) const {
+  if (delegate_) {
+    return delegate_->ShouldRegisterAcceleratorForCommandId(
+        GetCommandIdAt(index));
+  }
+  return true;
+}
+
+bool AtomMenuModel::WorksWhenHiddenAt(int index) const {
+  if (delegate_) {
+    return delegate_->ShouldCommandIdWorkWhenHidden(GetCommandIdAt(index));
+  }
+  return true;
+}
+
+void AtomMenuModel::MenuWillClose() {
+  ui::SimpleMenuModel::MenuWillClose();
+  for (Observer& observer : observers_) {
+    observer.OnMenuWillClose();
+  }
+}
+
+void AtomMenuModel::MenuWillShow() {
+  ui::SimpleMenuModel::MenuWillShow();
+  for (Observer& observer : observers_) {
+    observer.OnMenuWillShow();
+  }
 }
 
 AtomMenuModel* AtomMenuModel::GetSubmenuModelAt(int index) {

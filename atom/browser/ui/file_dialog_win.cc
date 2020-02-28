@@ -6,9 +6,10 @@
 
 #include <windows.h>  // windows.h must be included first
 
-#include <atlbase.h>
-#include <commdlg.h>
+#include <atlbase.h>  // atlbase.h for CComPtr
+
 #include <shlobj.h>
+#include <shobjidl.h>
 
 #include "atom/browser/native_window_views.h"
 #include "atom/browser/unresponsive_suppressor.h"
@@ -18,26 +19,29 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "base/win/registry.h"
-#include "third_party/wtl/include/atlapp.h"
-#include "third_party/wtl/include/atldlgs.h"
 
 namespace file_dialog {
+
+DialogSettings::DialogSettings() = default;
+DialogSettings::DialogSettings(const DialogSettings&) = default;
+DialogSettings::~DialogSettings() = default;
 
 namespace {
 
 // Distinguish directories from regular files.
 bool IsDirectory(const base::FilePath& path) {
   base::File::Info file_info;
-  return base::GetFileInfo(path, &file_info) ?
-      file_info.is_directory : path.EndsWithSeparator();
+  return base::GetFileInfo(path, &file_info) ? file_info.is_directory
+                                             : path.EndsWithSeparator();
 }
 
 void ConvertFilters(const Filters& filters,
                     std::vector<std::wstring>* buffer,
                     std::vector<COMDLG_FILTERSPEC>* filterspec) {
   if (filters.empty()) {
-    COMDLG_FILTERSPEC spec = { L"All Files (*.*)", L"*.*" };
+    COMDLG_FILTERSPEC spec = {L"All Files (*.*)", L"*.*"};
     filterspec->push_back(spec);
     return;
   }
@@ -60,160 +64,185 @@ void ConvertFilters(const Filters& filters,
   }
 }
 
-// Generic class to delegate common open/save dialog's behaviours, users need to
-// call interface methods via GetPtr().
-template <typename T>
-class FileDialog {
- public:
-  FileDialog(const base::FilePath& default_path,
-             const std::string& title,
-             const std::string& button_label,
-             const Filters& filters, int options) {
-    std::wstring file_part;
-    if (!IsDirectory(default_path))
-      file_part = default_path.BaseName().value();
-
-    std::vector<std::wstring> buffer;
-    std::vector<COMDLG_FILTERSPEC> filterspec;
-    ConvertFilters(filters, &buffer, &filterspec);
-
-    dialog_.reset(new T(file_part.c_str(), options, NULL,
-                        filterspec.data(), filterspec.size()));
-
-    if (!title.empty())
-      GetPtr()->SetTitle(base::UTF8ToUTF16(title).c_str());
-
-    if (!button_label.empty())
-      GetPtr()->SetOkButtonLabel(base::UTF8ToUTF16(button_label).c_str());
-
-    // By default, *.* will be added to the file name if file type is "*.*". In
-    // Electron, we disable it to make a better experience.
-    //
-    // From MSDN: https://msdn.microsoft.com/en-us/library/windows/desktop/
-    // bb775970(v=vs.85).aspx
-    //
-    // If SetDefaultExtension is not called, the dialog will not update
-    // automatically when user choose a new file type in the file dialog.
-    //
-    // We set file extension to the first none-wildcard extension to make
-    // sure the dialog will update file extension automatically.
-    for (size_t i = 0; i < filterspec.size(); ++i) {
-      if (std::wstring(filterspec[i].pszSpec) != L"*.*") {
-        // SetFileTypeIndex is regarded as one-based index.
-        GetPtr()->SetFileTypeIndex(i+1);
-        GetPtr()->SetDefaultExtension(filterspec[i].pszSpec);
-        break;
-      }
-    }
-
-    SetDefaultFolder(default_path);
-  }
-
-  bool Show(atom::NativeWindow* parent_window) {
-    atom::UnresponsiveSuppressor suppressor;
-    HWND window = parent_window ? static_cast<atom::NativeWindowViews*>(
-        parent_window)->GetAcceleratedWidget() :
-        NULL;
-    return dialog_->DoModal(window) == IDOK;
-  }
-
-  T* GetDialog() { return dialog_.get(); }
-
-  IFileDialog* GetPtr() const { return dialog_->GetPtr(); }
-
- private:
-  // Set up the initial directory for the dialog.
-  void SetDefaultFolder(const base::FilePath file_path) {
-    std::wstring directory = IsDirectory(file_path) ?
-        file_path.value() :
-        file_path.DirName().value();
-
-    ATL::CComPtr<IShellItem> folder_item;
-    HRESULT hr = SHCreateItemFromParsingName(directory.c_str(),
-                                             NULL,
-                                             IID_PPV_ARGS(&folder_item));
-    if (SUCCEEDED(hr))
-      GetPtr()->SetFolder(folder_item);
-  }
-
-  std::unique_ptr<T> dialog_;
-
-  DISALLOW_COPY_AND_ASSIGN(FileDialog);
-};
-
 struct RunState {
   base::Thread* dialog_thread;
-  base::MessageLoop* ui_message_loop;
+  scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner;
 };
 
 bool CreateDialogThread(RunState* run_state) {
-  std::unique_ptr<base::Thread> thread(
-      new base::Thread(ATOM_PRODUCT_NAME "FileDialogThread"));
+  auto thread =
+      std::make_unique<base::Thread>(ATOM_PRODUCT_NAME "FileDialogThread");
   thread->init_com_with_mta(false);
   if (!thread->Start())
     return false;
 
   run_state->dialog_thread = thread.release();
-  run_state->ui_message_loop = base::MessageLoop::current();
+  run_state->ui_task_runner = base::ThreadTaskRunnerHandle::Get();
   return true;
 }
 
+void OnDialogOpened(atom::util::Promise promise,
+                    bool canceled,
+                    std::vector<base::FilePath> paths) {
+  mate::Dictionary dict = mate::Dictionary::CreateEmpty(promise.isolate());
+  dict.Set("canceled", canceled);
+  dict.Set("filePaths", paths);
+  promise.Resolve(dict.GetHandle());
+}
+
 void RunOpenDialogInNewThread(const RunState& run_state,
-                              atom::NativeWindow* parent,
-                              const std::string& title,
-                              const std::string& button_label,
-                              const base::FilePath& default_path,
-                              const Filters& filters,
-                              int properties,
-                              const OpenDialogCallback& callback) {
+                              const DialogSettings& settings,
+                              atom::util::Promise promise) {
   std::vector<base::FilePath> paths;
-  bool result = ShowOpenDialog(parent, title, button_label, default_path,
-                               filters, properties, &paths);
-  run_state.ui_message_loop->PostTask(FROM_HERE,
-                                      base::Bind(callback, result, paths));
-  run_state.ui_message_loop->DeleteSoon(FROM_HERE, run_state.dialog_thread);
+  bool result = ShowOpenDialogSync(settings, &paths);
+  run_state.ui_task_runner->PostTask(
+      FROM_HERE,
+      base::BindOnce(&OnDialogOpened, std::move(promise), !result, paths));
+  run_state.ui_task_runner->DeleteSoon(FROM_HERE, run_state.dialog_thread);
+}
+
+void OnSaveDialogDone(atom::util::Promise promise,
+                      bool canceled,
+                      const base::FilePath path) {
+  mate::Dictionary dict = mate::Dictionary::CreateEmpty(promise.isolate());
+  dict.Set("canceled", canceled);
+  dict.Set("filePath", path);
+  promise.Resolve(dict.GetHandle());
 }
 
 void RunSaveDialogInNewThread(const RunState& run_state,
-                              atom::NativeWindow* parent,
-                              const std::string& title,
-                              const std::string& button_label,
-                              const base::FilePath& default_path,
-                              const Filters& filters,
-                              const SaveDialogCallback& callback) {
+                              const DialogSettings& settings,
+                              atom::util::Promise promise) {
   base::FilePath path;
-  bool result = ShowSaveDialog(parent, title, button_label, default_path,
-                               filters, &path);
-  run_state.ui_message_loop->PostTask(FROM_HERE,
-                                      base::Bind(callback, result, path));
-  run_state.ui_message_loop->DeleteSoon(FROM_HERE, run_state.dialog_thread);
+  bool result = ShowSaveDialogSync(settings, &path);
+  run_state.ui_task_runner->PostTask(
+      FROM_HERE,
+      base::BindOnce(&OnSaveDialogDone, std::move(promise), !result, path));
+  run_state.ui_task_runner->DeleteSoon(FROM_HERE, run_state.dialog_thread);
 }
 
 }  // namespace
 
-bool ShowOpenDialog(atom::NativeWindow* parent_window,
-                    const std::string& title,
-                    const std::string& button_label,
-                    const base::FilePath& default_path,
-                    const Filters& filters,
-                    int properties,
-                    std::vector<base::FilePath>* paths) {
-  int options = FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST;
-  if (properties & FILE_DIALOG_OPEN_DIRECTORY)
-    options |= FOS_PICKFOLDERS;
-  if (properties & FILE_DIALOG_MULTI_SELECTIONS)
-    options |= FOS_ALLOWMULTISELECT;
-  if (properties & FILE_DIALOG_SHOW_HIDDEN_FILES)
-    options |= FOS_FORCESHOWHIDDEN;
+static HRESULT GetFileNameFromShellItem(IShellItem* pShellItem,
+                                        SIGDN type,
+                                        LPWSTR lpstr,
+                                        size_t cchLength) {
+  assert(pShellItem != NULL);
 
-  FileDialog<CShellFileOpenDialog> open_dialog(
-      default_path, title, button_label, filters, options);
-  if (!open_dialog.Show(parent_window))
+  LPWSTR lpstrName = NULL;
+  HRESULT hRet = pShellItem->GetDisplayName(type, &lpstrName);
+
+  if (SUCCEEDED(hRet)) {
+    if (wcslen(lpstrName) < cchLength) {
+      wcscpy_s(lpstr, cchLength, lpstrName);
+    } else {
+      NOTREACHED();
+      hRet = DISP_E_BUFFERTOOSMALL;
+    }
+
+    ::CoTaskMemFree(lpstrName);
+  }
+
+  return hRet;
+}
+
+static void SetDefaultFolder(IFileDialog* dialog,
+                             const base::FilePath file_path) {
+  std::wstring directory =
+      IsDirectory(file_path) ? file_path.value() : file_path.DirName().value();
+
+  ATL::CComPtr<IShellItem> folder_item;
+  HRESULT hr = SHCreateItemFromParsingName(directory.c_str(), NULL,
+                                           IID_PPV_ARGS(&folder_item));
+  if (SUCCEEDED(hr))
+    dialog->SetFolder(folder_item);
+}
+
+static HRESULT ShowFileDialog(IFileDialog* dialog,
+                              const DialogSettings& settings) {
+  atom::UnresponsiveSuppressor suppressor;
+  HWND parent_window =
+      settings.parent_window
+          ? static_cast<atom::NativeWindowViews*>(settings.parent_window)
+                ->GetAcceleratedWidget()
+          : NULL;
+
+  return dialog->Show(parent_window);
+}
+
+static void ApplySettings(IFileDialog* dialog, const DialogSettings& settings) {
+  std::wstring file_part;
+
+  if (!IsDirectory(settings.default_path))
+    file_part = settings.default_path.BaseName().value();
+
+  dialog->SetFileName(file_part.c_str());
+
+  if (!settings.title.empty())
+    dialog->SetTitle(base::UTF8ToUTF16(settings.title).c_str());
+
+  if (!settings.button_label.empty())
+    dialog->SetOkButtonLabel(base::UTF8ToUTF16(settings.button_label).c_str());
+
+  std::vector<std::wstring> buffer;
+  std::vector<COMDLG_FILTERSPEC> filterspec;
+  ConvertFilters(settings.filters, &buffer, &filterspec);
+
+  if (!filterspec.empty()) {
+    dialog->SetFileTypes(filterspec.size(), filterspec.data());
+  }
+
+  // By default, *.* will be added to the file name if file type is "*.*". In
+  // Electron, we disable it to make a better experience.
+  //
+  // From MSDN: https://msdn.microsoft.com/en-us/library/windows/desktop/
+  // bb775970(v=vs.85).aspx
+  //
+  // If SetDefaultExtension is not called, the dialog will not update
+  // automatically when user choose a new file type in the file dialog.
+  //
+  // We set file extension to the first none-wildcard extension to make
+  // sure the dialog will update file extension automatically.
+  for (size_t i = 0; i < filterspec.size(); ++i) {
+    if (std::wstring(filterspec[i].pszSpec) != L"*.*") {
+      // SetFileTypeIndex is regarded as one-based index.
+      dialog->SetFileTypeIndex(i + 1);
+      dialog->SetDefaultExtension(filterspec[i].pszSpec);
+      break;
+    }
+  }
+
+  if (settings.default_path.IsAbsolute()) {
+    SetDefaultFolder(dialog, settings.default_path);
+  }
+}
+
+bool ShowOpenDialogSync(const DialogSettings& settings,
+                        std::vector<base::FilePath>* paths) {
+  ATL::CComPtr<IFileOpenDialog> file_open_dialog;
+  HRESULT hr = file_open_dialog.CoCreateInstance(CLSID_FileOpenDialog);
+
+  if (FAILED(hr))
+    return false;
+
+  DWORD options = FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST;
+  if (settings.properties & FILE_DIALOG_OPEN_DIRECTORY)
+    options |= FOS_PICKFOLDERS;
+  if (settings.properties & FILE_DIALOG_MULTI_SELECTIONS)
+    options |= FOS_ALLOWMULTISELECT;
+  if (settings.properties & FILE_DIALOG_SHOW_HIDDEN_FILES)
+    options |= FOS_FORCESHOWHIDDEN;
+  if (settings.properties & FILE_DIALOG_PROMPT_TO_CREATE)
+    options |= FOS_CREATEPROMPT;
+  file_open_dialog->SetOptions(options);
+
+  ApplySettings(file_open_dialog, settings);
+  hr = ShowFileDialog(file_open_dialog, settings);
+  if (FAILED(hr))
     return false;
 
   ATL::CComPtr<IShellItemArray> items;
-  HRESULT hr = static_cast<IFileOpenDialog*>(open_dialog.GetPtr())->GetResults(
-      &items);
+  hr = file_open_dialog->GetResults(&items);
   if (FAILED(hr))
     return false;
 
@@ -230,8 +259,8 @@ bool ShowOpenDialog(atom::NativeWindow* parent_window,
       return false;
 
     wchar_t file_name[MAX_PATH];
-    hr = CShellFileOpenDialog::GetFileNameFromShellItem(
-        item, SIGDN_FILESYSPATH, file_name, MAX_PATH);
+    hr = GetFileNameFromShellItem(item, SIGDN_FILESYSPATH, file_name, MAX_PATH);
+
     if (FAILED(hr))
       return false;
 
@@ -241,62 +270,64 @@ bool ShowOpenDialog(atom::NativeWindow* parent_window,
   return true;
 }
 
-void ShowOpenDialog(atom::NativeWindow* parent,
-                    const std::string& title,
-                    const std::string& button_label,
-                    const base::FilePath& default_path,
-                    const Filters& filters,
-                    int properties,
-                    const OpenDialogCallback& callback) {
+void ShowOpenDialog(const DialogSettings& settings,
+                    atom::util::Promise promise) {
+  mate::Dictionary dict = mate::Dictionary::CreateEmpty(promise.isolate());
   RunState run_state;
   if (!CreateDialogThread(&run_state)) {
-    callback.Run(false, std::vector<base::FilePath>());
-    return;
+    dict.Set("canceled", true);
+    dict.Set("filePaths", std::vector<base::FilePath>());
+    promise.Resolve(dict.GetHandle());
+  } else {
+    run_state.dialog_thread->task_runner()->PostTask(
+        FROM_HERE, base::BindOnce(&RunOpenDialogInNewThread, run_state,
+                                  settings, std::move(promise)));
   }
-
-  run_state.dialog_thread->message_loop()->PostTask(
-      FROM_HERE,
-      base::Bind(&RunOpenDialogInNewThread, run_state, parent, title,
-                 button_label, default_path, filters, properties, callback));
 }
 
-bool ShowSaveDialog(atom::NativeWindow* parent_window,
-                    const std::string& title,
-                    const std::string& button_label,
-                    const base::FilePath& default_path,
-                    const Filters& filters,
-                    base::FilePath* path) {
-  FileDialog<CShellFileSaveDialog> save_dialog(
-      default_path, title, button_label, filters,
-      FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_OVERWRITEPROMPT);
-  if (!save_dialog.Show(parent_window))
-    return false;
-
-  wchar_t buffer[MAX_PATH];
-  HRESULT hr = save_dialog.GetDialog()->GetFilePath(buffer, MAX_PATH);
+bool ShowSaveDialogSync(const DialogSettings& settings, base::FilePath* path) {
+  ATL::CComPtr<IFileSaveDialog> file_save_dialog;
+  HRESULT hr = file_save_dialog.CoCreateInstance(CLSID_FileSaveDialog);
   if (FAILED(hr))
     return false;
 
-  *path = base::FilePath(buffer);
+  file_save_dialog->SetOptions(FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST |
+                               FOS_OVERWRITEPROMPT);
+  ApplySettings(file_save_dialog, settings);
+  hr = ShowFileDialog(file_save_dialog, settings);
+
+  if (FAILED(hr))
+    return false;
+
+  CComPtr<IShellItem> pItem;
+  hr = file_save_dialog->GetResult(&pItem);
+  if (FAILED(hr))
+    return false;
+
+  PWSTR result_path = nullptr;
+  hr = pItem->GetDisplayName(SIGDN_FILESYSPATH, &result_path);
+  if (!SUCCEEDED(hr))
+    return false;
+
+  *path = base::FilePath(result_path);
+  CoTaskMemFree(result_path);
+
   return true;
 }
 
-void ShowSaveDialog(atom::NativeWindow* parent,
-                    const std::string& title,
-                    const std::string& button_label,
-                    const base::FilePath& default_path,
-                    const Filters& filters,
-                    const SaveDialogCallback& callback) {
+void ShowSaveDialog(const DialogSettings& settings,
+                    atom::util::Promise promise) {
   RunState run_state;
   if (!CreateDialogThread(&run_state)) {
-    callback.Run(false, base::FilePath());
-    return;
+    mate::Dictionary dict = mate::Dictionary::CreateEmpty(promise.isolate());
+    dict.Set("canceled", true);
+    dict.Set("filePath", base::FilePath());
+    promise.Resolve(dict.GetHandle());
+  } else {
+    run_state.dialog_thread->task_runner()->PostTask(
+        FROM_HERE, base::BindOnce(&RunSaveDialogInNewThread, run_state,
+                                  settings, std::move(promise)));
   }
-
-  run_state.dialog_thread->message_loop()->PostTask(
-      FROM_HERE,
-      base::Bind(&RunSaveDialogInNewThread, run_state, parent, title,
-                 button_label, default_path, filters, callback));
 }
 
 }  // namespace file_dialog

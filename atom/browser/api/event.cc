@@ -4,51 +4,67 @@
 
 #include "atom/browser/api/event.h"
 
+#include <utility>
+
 #include "atom/common/api/api_messages.h"
 #include "atom/common/native_mate_converters/string16_converter.h"
+#include "atom/common/native_mate_converters/value_converter.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "native_mate/object_template_builder.h"
 
 namespace mate {
 
-Event::Event(v8::Isolate* isolate)
-    : sender_(nullptr),
-      message_(nullptr) {
+Event::Event(v8::Isolate* isolate) {
   Init(isolate);
 }
 
-Event::~Event() {
-}
+Event::~Event() {}
 
-void Event::SetSenderAndMessage(content::WebContents* sender,
-                                IPC::Message* message) {
+void Event::SetSenderAndMessage(content::RenderFrameHost* sender,
+                                base::Optional<MessageSyncCallback> callback) {
   DCHECK(!sender_);
-  DCHECK(!message_);
+  DCHECK(!callback_);
   sender_ = sender;
-  message_ = message;
+  callback_ = std::move(callback);
 
-  Observe(sender);
+  Observe(content::WebContents::FromRenderFrameHost(sender));
 }
 
-void Event::WebContentsDestroyed() {
+void Event::RenderFrameDeleted(content::RenderFrameHost* rfh) {
+  if (sender_ != rfh)
+    return;
   sender_ = nullptr;
-  message_ = nullptr;
+  callback_.reset();
+}
+
+void Event::RenderFrameHostChanged(content::RenderFrameHost* old_rfh,
+                                   content::RenderFrameHost* new_rfh) {
+  if (sender_ && sender_ == old_rfh)
+    sender_ = new_rfh;
+}
+
+void Event::FrameDeleted(content::RenderFrameHost* rfh) {
+  if (sender_ != rfh)
+    return;
+  sender_ = nullptr;
+  callback_.reset();
 }
 
 void Event::PreventDefault(v8::Isolate* isolate) {
-  GetWrapper()->Set(StringToV8(isolate, "defaultPrevented"),
-                           v8::True(isolate));
+  GetWrapper()
+      ->Set(isolate->GetCurrentContext(),
+            StringToV8(isolate, "defaultPrevented"), v8::True(isolate))
+      .Check();
 }
 
-bool Event::SendReply(const base::string16& json) {
-  if (message_ == nullptr || sender_ == nullptr)
+bool Event::SendReply(const base::ListValue& result) {
+  if (!callback_ || sender_ == nullptr)
     return false;
 
-  AtomViewHostMsg_Message_Sync::WriteReplyParams(message_, json);
-  bool success = sender_->Send(message_);
-  message_ = nullptr;
-  sender_ = nullptr;
-  return success;
+  std::move(*callback_).Run(result.Clone());
+  callback_.reset();
+  return true;
 }
 
 // static
@@ -57,8 +73,8 @@ Handle<Event> Event::Create(v8::Isolate* isolate) {
 }
 
 // static
-void Event::BuildPrototype(
-    v8::Isolate* isolate, v8::Local<v8::FunctionTemplate> prototype) {
+void Event::BuildPrototype(v8::Isolate* isolate,
+                           v8::Local<v8::FunctionTemplate> prototype) {
   prototype->SetClassName(mate::StringToV8(isolate, "Event"));
   mate::ObjectTemplateBuilder(isolate, prototype->PrototypeTemplate())
       .SetMethod("preventDefault", &Event::PreventDefault)

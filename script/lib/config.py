@@ -5,11 +5,17 @@ import os
 import platform
 import sys
 
+# URL to the mips64el sysroot image.
+MIPS64EL_SYSROOT_URL = 'https://github.com/electron' \
+                     + '/debian-sysroot-image-creator/releases/download' \
+                     + '/v0.5.0/debian_jessie_mips64-sysroot.tar.bz2'
+# URL to the mips64el toolchain.
+MIPS64EL_GCC = 'gcc-4.8.3-d197-n64-loongson'
+MIPS64EL_GCC_URL = 'http://ftp.loongnix.org/toolchain/gcc/release/' \
+                 + MIPS64EL_GCC + '.tar.gz'
 
 BASE_URL = os.getenv('LIBCHROMIUMCONTENT_MIRROR') or \
     'https://s3.amazonaws.com/github-janky-artifacts/libchromiumcontent'
-LIBCHROMIUMCONTENT_COMMIT = os.getenv('LIBCHROMIUMCONTENT_COMMIT') or \
-    '2c8173b64b7fbc50e7190a6982e6db6b3eda0582'
 
 PLATFORM = {
   'cygwin': 'win32',
@@ -17,6 +23,16 @@ PLATFORM = {
   'linux2': 'linux',
   'win32': 'win32',
 }[sys.platform]
+
+LINUX_BINARIES = [
+  'electron',
+  'chrome-sandbox',
+  'libffmpeg.so',
+  'libGLESv2.so',
+  'libEGL.so',
+  'swiftshader/libGLESv2.so',
+  'swiftshader/libEGL.so'
+]
 
 verbose_mode = False
 
@@ -29,21 +45,11 @@ def get_platform_key():
 
 
 def get_target_arch():
-  try:
-    target_arch_path = os.path.join(__file__, '..', '..', '..', 'vendor',
-                                    'brightray', 'vendor', 'download',
-                                    'libchromiumcontent', '.target_arch')
-    with open(os.path.normpath(target_arch_path)) as f:
-      return f.read().strip()
-  except IOError as e:
-    if e.errno != errno.ENOENT:
-      raise
+  arch = os.environ.get('TARGET_ARCH')
+  if arch is None:
+    return 'x64'
+  return arch
 
-  return 'x64'
-
-
-def get_chromedriver_version():
-  return 'v2.21'
 
 def get_env_var(name):
   value = os.environ.get('ELECTRON_' + name, '')
@@ -84,3 +90,22 @@ def get_zip_name(name, version, suffix=''):
   if suffix:
     zip_name += '-' + suffix
   return zip_name + '.zip'
+
+
+def build_env():
+  env = os.environ.copy()
+  if get_target_arch() == "mips64el":
+    SOURCE_ROOT = os.path.abspath(os.path.dirname(
+                    os.path.dirname(os.path.dirname(__file__))))
+    VENDOR_DIR = os.path.join(SOURCE_ROOT, 'vendor')
+    gcc_dir = os.path.join(VENDOR_DIR, MIPS64EL_GCC)
+    ldlib_dirs = [
+      gcc_dir + '/usr/x86_64-unknown-linux-gnu/mips64el-redhat-linux/lib',
+      gcc_dir + '/usr/lib64',
+      gcc_dir + '/usr/mips64el-redhat-linux/lib64',
+      gcc_dir + '/usr/mips64el-redhat-linux/sysroot/lib64',
+      gcc_dir + '/usr/mips64el-redhat-linux/sysroot/usr/lib64',
+    ]
+    env['LD_LIBRARY_PATH'] = os.pathsep.join(ldlib_dirs)
+    env['PATH'] = os.pathsep.join([gcc_dir + '/usr/bin', env['PATH']])
+  return env

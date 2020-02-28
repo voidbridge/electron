@@ -30,25 +30,20 @@ class TrackableObjectBase {
   // Wrap TrackableObject into a class that SupportsUserData.
   void AttachAsUserData(base::SupportsUserData* wrapped);
 
+  // Get the weak_map_id from SupportsUserData.
+  static int32_t GetIDFromWrappedClass(base::SupportsUserData* wrapped);
+
  protected:
   virtual ~TrackableObjectBase();
 
   // Returns a closure that can destroy the native class.
-  base::Closure GetDestroyClosure();
+  base::OnceClosure GetDestroyClosure();
 
-  // Get the weak_map_id from SupportsUserData.
-  static int32_t GetIDFromWrappedClass(base::SupportsUserData* wrapped);
-
-  // Register a callback that should be destroyed before JavaScript environment
-  // gets destroyed.
-  static base::Closure RegisterDestructionCallback(const base::Closure& c);
-
-  int32_t weak_map_id_;
+  int32_t weak_map_id_ = 0;
 
  private:
   void Destroy();
 
-  base::Closure cleanup_;
   base::WeakPtrFactory<TrackableObjectBase> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(TrackableObjectBase);
@@ -56,13 +51,16 @@ class TrackableObjectBase {
 
 // All instances of TrackableObject will be kept in a weak map and can be got
 // from its ID.
-template<typename T>
+template <typename T>
 class TrackableObject : public TrackableObjectBase,
                         public mate::EventEmitter<T> {
  public:
   // Mark the JS object as destroyed.
   void MarkDestroyed() {
-    Wrappable<T>::GetWrapper()->SetAlignedPointerInInternalField(0, nullptr);
+    v8::Local<v8::Object> wrapper = Wrappable<T>::GetWrapper();
+    if (!wrapper.IsEmpty()) {
+      wrapper->SetAlignedPointerInInternalField(0, nullptr);
+    }
   }
 
   bool IsDestroyed() {
@@ -109,18 +107,15 @@ class TrackableObject : public TrackableObjectBase,
   }
 
  protected:
-  TrackableObject() {}
+  TrackableObject() { weak_map_id_ = ++next_id_; }
 
-  ~TrackableObject() override {
-    RemoveFromWeakMap();
-  }
+  ~TrackableObject() override { RemoveFromWeakMap(); }
 
   void InitWith(v8::Isolate* isolate, v8::Local<v8::Object> wrapper) override {
     WrappableBase::InitWith(isolate, wrapper);
     if (!weak_map_) {
       weak_map_ = new atom::KeyWeakMap<int32_t>;
     }
-    weak_map_id_ = ++next_id_;
     weak_map_->Set(isolate, weak_map_id_, wrapper);
   }
 
@@ -131,10 +126,10 @@ class TrackableObject : public TrackableObjectBase,
   DISALLOW_COPY_AND_ASSIGN(TrackableObject);
 };
 
-template<typename T>
+template <typename T>
 int32_t TrackableObject<T>::next_id_ = 0;
 
-template<typename T>
+template <typename T>
 atom::KeyWeakMap<int32_t>* TrackableObject<T>::weak_map_ = nullptr;
 
 }  // namespace mate

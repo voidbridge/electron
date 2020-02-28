@@ -5,55 +5,48 @@
 #include "atom/browser/atom_speech_recognition_manager_delegate.h"
 
 #include <string>
+#include <utility>
 
 #include "base/callback.h"
 
 namespace atom {
 
-AtomSpeechRecognitionManagerDelegate::AtomSpeechRecognitionManagerDelegate() {
-}
+AtomSpeechRecognitionManagerDelegate::AtomSpeechRecognitionManagerDelegate() {}
 
-AtomSpeechRecognitionManagerDelegate::~AtomSpeechRecognitionManagerDelegate() {
-}
+AtomSpeechRecognitionManagerDelegate::~AtomSpeechRecognitionManagerDelegate() {}
 
-void AtomSpeechRecognitionManagerDelegate::OnRecognitionStart(int session_id) {
-}
+void AtomSpeechRecognitionManagerDelegate::OnRecognitionStart(int session_id) {}
 
-void AtomSpeechRecognitionManagerDelegate::OnAudioStart(int session_id) {
-}
+void AtomSpeechRecognitionManagerDelegate::OnAudioStart(int session_id) {}
 
 void AtomSpeechRecognitionManagerDelegate::OnEnvironmentEstimationComplete(
-    int session_id) {
-}
+    int session_id) {}
 
-void AtomSpeechRecognitionManagerDelegate::OnSoundStart(int session_id) {
-}
+void AtomSpeechRecognitionManagerDelegate::OnSoundStart(int session_id) {}
 
-void AtomSpeechRecognitionManagerDelegate::OnSoundEnd(int session_id) {
-}
+void AtomSpeechRecognitionManagerDelegate::OnSoundEnd(int session_id) {}
 
-void AtomSpeechRecognitionManagerDelegate::OnAudioEnd(int session_id) {
-}
+void AtomSpeechRecognitionManagerDelegate::OnAudioEnd(int session_id) {}
 
-void AtomSpeechRecognitionManagerDelegate::OnRecognitionEnd(int session_id) {
-}
+void AtomSpeechRecognitionManagerDelegate::OnRecognitionEnd(int session_id) {}
 
 void AtomSpeechRecognitionManagerDelegate::OnRecognitionResults(
-    int session_id, const content::SpeechRecognitionResults& result) {
-}
+    int session_id,
+    const std::vector<blink::mojom::SpeechRecognitionResultPtr>& results) {}
 
 void AtomSpeechRecognitionManagerDelegate::OnRecognitionError(
-    int session_id, const content::SpeechRecognitionError& error) {
-}
+    int session_id,
+    const blink::mojom::SpeechRecognitionError& error) {}
 
 void AtomSpeechRecognitionManagerDelegate::OnAudioLevelsChange(
-    int session_id, float volume, float noise_volume) {
-}
+    int session_id,
+    float volume,
+    float noise_volume) {}
 
 void AtomSpeechRecognitionManagerDelegate::CheckRecognitionIsAllowed(
     int session_id,
-    base::Callback<void(bool ask_user, bool is_allowed)> callback) {
-  callback.Run(true, true);
+    base::OnceCallback<void(bool ask_user, bool is_allowed)> callback) {
+  std::move(callback).Run(true, true);
 }
 
 content::SpeechRecognitionEventListener*

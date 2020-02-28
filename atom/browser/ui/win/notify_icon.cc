@@ -15,18 +15,16 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/image/image.h"
 #include "ui/views/controls/menu/menu_runner.h"
+#include "ui/views/widget/widget.h"
 
 namespace atom {
 
-NotifyIcon::NotifyIcon(NotifyIconHost* host,
-                       UINT id,
-                       HWND window,
-                       UINT message)
+NotifyIcon::NotifyIcon(NotifyIconHost* host, UINT id, HWND window, UINT message)
     : host_(host),
       icon_id_(id),
       window_(window),
       message_id_(message),
-      menu_model_(NULL) {
+      weak_factory_(this) {
   NOTIFYICONDATA icon_data;
   InitIconData(&icon_data);
   icon_data.uFlags |= NIF_MESSAGE;
@@ -55,7 +53,9 @@ void NotifyIcon::HandleClickEvent(int modifiers,
     if (double_button_click)  // double left click
       NotifyDoubleClicked(bounds, modifiers);
     else  // single left click
-      NotifyClicked(bounds, modifiers);
+      NotifyClicked(bounds,
+                    display::Screen::GetScreen()->GetCursorScreenPoint(),
+                    modifiers);
     return;
   } else if (!double_button_click) {  // single right click
     if (menu_model_)
@@ -142,16 +142,36 @@ void NotifyIcon::PopUpContextMenu(const gfx::Point& pos,
   if (!SetForegroundWindow(window_))
     return;
 
+  // Cancel current menu if there is one.
+  if (menu_runner_ && menu_runner_->IsRunning())
+    menu_runner_->Cancel();
+
   // Show menu at mouse's position by default.
   gfx::Rect rect(pos, gfx::Size());
   if (pos.IsOrigin())
     rect.set_origin(display::Screen::GetScreen()->GetCursorScreenPoint());
 
-  views::MenuRunner menu_runner(
+  // Create a widget for the menu, otherwise we get no keyboard events, which
+  // is required for accessibility.
+  widget_.reset(new views::Widget());
+  views::Widget::InitParams params(views::Widget::InitParams::TYPE_POPUP);
+  params.ownership =
+      views::Widget::InitParams::Ownership::WIDGET_OWNS_NATIVE_WIDGET;
+  params.bounds = gfx::Rect(0, 0, 0, 0);
+  params.force_software_compositing = true;
+
+  widget_->Init(params);
+
+  widget_->Show();
+  widget_->Activate();
+  menu_runner_.reset(new views::MenuRunner(
       menu_model != nullptr ? menu_model : menu_model_,
-      views::MenuRunner::CONTEXT_MENU | views::MenuRunner::HAS_MNEMONICS);
-  ignore_result(menu_runner.RunMenuAt(
-      NULL, NULL, rect, views::MENU_ANCHOR_TOPLEFT, ui::MENU_SOURCE_MOUSE));
+      views::MenuRunner::CONTEXT_MENU | views::MenuRunner::HAS_MNEMONICS,
+      base::Bind(&NotifyIcon::OnContextMenuClosed,
+                 weak_factory_.GetWeakPtr())));
+  menu_runner_->RunMenuAt(widget_.get(), NULL, rect,
+                          views::MenuAnchorPosition::kTopLeft,
+                          ui::MENU_SOURCE_MOUSE);
 }
 
 void NotifyIcon::SetContextMenu(AtomMenuModel* menu_model) {
@@ -165,7 +185,7 @@ gfx::Rect NotifyIcon::GetBounds() {
   icon_id.hWnd = window_;
   icon_id.cbSize = sizeof(NOTIFYICONIDENTIFIER);
 
-  RECT rect = { 0 };
+  RECT rect = {0};
   Shell_NotifyIconGetRect(&icon_id, &rect);
   return display::win::ScreenWin::ScreenToDIPRect(window_, gfx::Rect(rect));
 }
@@ -175,6 +195,10 @@ void NotifyIcon::InitIconData(NOTIFYICONDATA* icon_data) {
   icon_data->cbSize = sizeof(NOTIFYICONDATA);
   icon_data->hWnd = window_;
   icon_data->uID = icon_id_;
+}
+
+void NotifyIcon::OnContextMenuClosed() {
+  widget_->Close();
 }
 
 }  // namespace atom

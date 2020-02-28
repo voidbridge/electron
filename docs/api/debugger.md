@@ -8,7 +8,7 @@ Chrome Developer Tools has a [special binding][rdp] available at JavaScript
 runtime that allows interacting with pages and instrumenting them.
 
 ```javascript
-const {BrowserWindow} = require('electron')
+const { BrowserWindow } = require('electron')
 let win = new BrowserWindow()
 
 try {
@@ -51,12 +51,26 @@ Detaches the debugger from the `webContents`.
 #### `debugger.sendCommand(method[, commandParams, callback])`
 
 * `method` String - Method name, should be one of the methods defined by the
-   remote debugging protocol.
+   [remote debugging protocol][rdp].
 * `commandParams` Object (optional) - JSON object with request parameters.
 * `callback` Function (optional) - Response
   * `error` Object - Error message indicating the failure of the command.
   * `result` Any - Response defined by the 'returns' attribute of
      the command description in the remote debugging protocol.
+
+Send given command to the debugging target.
+
+**[Deprecated Soon](modernization/promisification.md)**
+
+#### `debugger.sendCommand(method[, commandParams])`
+
+* `method` String - Method name, should be one of the methods defined by the
+   [remote debugging protocol][rdp].
+* `commandParams` Object (optional) - JSON object with request parameters.
+
+Returns `Promise<any>` - A promise that resolves with the response defined by
+the 'returns' attribute of the command description in the remote debugging protocol
+or is rejected indicating the failure of the command.
 
 Send given command to the debugging target.
 
@@ -79,5 +93,5 @@ Emitted when debugging session is terminated. This happens either when
 
 Emitted whenever debugging target issues instrumentation event.
 
-[rdp]: https://developer.chrome.com/devtools/docs/debugger-protocol
+[rdp]: https://chromedevtools.github.io/devtools-protocol/
 [`webContents.findInPage`]: web-contents.md#contentsfindinpagetext-options

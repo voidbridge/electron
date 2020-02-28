@@ -10,8 +10,6 @@
 #include "atom/browser/ui/win/notify_icon.h"
 #include "base/bind.h"
 #include "base/stl_util.h"
-#include "base/threading/non_thread_safe.h"
-#include "base/threading/thread.h"
 #include "base/win/win_util.h"
 #include "base/win/wrapped_window_proc.h"
 #include "ui/events/event_constants.h"
@@ -49,18 +47,13 @@ int GetKeyboardModifers() {
 
 }  // namespace
 
-NotifyIconHost::NotifyIconHost()
-    : next_icon_id_(1),
-      atom_(0),
-      instance_(NULL),
-      window_(NULL) {
+NotifyIconHost::NotifyIconHost() {
   // Register our window class
   WNDCLASSEX window_class;
   base::win::InitializeWindowClass(
       kNotifyIconHostWindowClass,
-      &base::win::WrappedWindowProc<NotifyIconHost::WndProcStatic>,
-      0, 0, 0, NULL, NULL, NULL, NULL, NULL,
-      &window_class);
+      &base::win::WrappedWindowProc<NotifyIconHost::WndProcStatic>, 0, 0, 0,
+      NULL, NULL, NULL, NULL, NULL, &window_class);
   instance_ = window_class.hInstance;
   atom_ = RegisterClassEx(&window_class);
   CHECK(atom_);
@@ -73,8 +66,8 @@ NotifyIconHost::NotifyIconHost()
   // create a hidden WS_POPUP window instead of an HWND_MESSAGE window, because
   // only top-level windows such as popups can receive broadcast messages like
   // "TaskbarCreated".
-  window_ = CreateWindow(MAKEINTATOM(atom_),
-                         0, WS_POPUP, 0, 0, 0, 0, 0, 0, instance_, 0);
+  window_ = CreateWindow(MAKEINTATOM(atom_), 0, WS_POPUP, 0, 0, 0, 0, 0, 0,
+                         instance_, 0);
   gfx::CheckWindowCreated(window_);
   gfx::SetWindowUserData(window_, this);
 }
@@ -86,8 +79,8 @@ NotifyIconHost::~NotifyIconHost() {
   if (atom_)
     UnregisterClass(MAKEINTATOM(atom_), instance_);
 
-  NotifyIcons copied_container(notify_icons_);
-  STLDeleteContainerPointers(copied_container.begin(), copied_container.end());
+  for (NotifyIcon* ptr : notify_icons_)
+    delete ptr;
 }
 
 NotifyIcon* NotifyIconHost::CreateNotifyIcon() {
@@ -110,11 +103,11 @@ void NotifyIconHost::Remove(NotifyIcon* icon) {
 }
 
 LRESULT CALLBACK NotifyIconHost::WndProcStatic(HWND hwnd,
-                                              UINT message,
-                                              WPARAM wparam,
-                                              LPARAM lparam) {
-  NotifyIconHost* msg_wnd = reinterpret_cast<NotifyIconHost*>(
-      GetWindowLongPtr(hwnd, GWLP_USERDATA));
+                                               UINT message,
+                                               WPARAM wparam,
+                                               LPARAM lparam) {
+  NotifyIconHost* msg_wnd =
+      reinterpret_cast<NotifyIconHost*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
   if (msg_wnd)
     return msg_wnd->WndProc(hwnd, message, wparam, lparam);
   else
@@ -122,9 +115,9 @@ LRESULT CALLBACK NotifyIconHost::WndProcStatic(HWND hwnd,
 }
 
 LRESULT CALLBACK NotifyIconHost::WndProc(HWND hwnd,
-                                        UINT message,
-                                        WPARAM wparam,
-                                        LPARAM lparam) {
+                                         UINT message,
+                                         WPARAM wparam,
+                                         LPARAM lparam) {
   if (message == taskbar_created_message_) {
     // We need to reset all of our icons because the taskbar went away.
     for (NotifyIcons::const_iterator i(notify_icons_.begin());

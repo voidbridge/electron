@@ -5,9 +5,10 @@
 #ifndef ATOM_BROWSER_WEB_CONTENTS_PERMISSION_HELPER_H_
 #define ATOM_BROWSER_WEB_CONTENTS_PERMISSION_HELPER_H_
 
+#include "content/public/browser/media_stream_request.h"
 #include "content/public/browser/permission_type.h"
 #include "content/public/browser/web_contents_user_data.h"
-#include "content/public/common/media_stream_request.h"
+#include "third_party/blink/public/common/mediastream/media_stream_request.h"
 
 namespace atom {
 
@@ -23,28 +24,36 @@ class WebContentsPermissionHelper
     OPEN_EXTERNAL,
   };
 
-  void RequestFullscreenPermission(
-      const base::Callback<void(bool)>& callback);
-  void RequestMediaAccessPermission(
-      const content::MediaStreamRequest& request,
-      const content::MediaResponseCallback& callback);
+  // Asynchronous Requests
+  void RequestFullscreenPermission(const base::Callback<void(bool)>& callback);
+  void RequestMediaAccessPermission(const content::MediaStreamRequest& request,
+                                    content::MediaResponseCallback callback);
   void RequestWebNotificationPermission(
       const base::Callback<void(bool)>& callback);
   void RequestPointerLockPermission(bool user_gesture);
-  void RequestOpenExternalPermission(
-      const base::Callback<void(bool)>& callback,
-      bool user_gesture);
+  void RequestOpenExternalPermission(const base::Callback<void(bool)>& callback,
+                                     bool user_gesture,
+                                     const GURL& url);
+
+  // Synchronous Checks
+  bool CheckMediaAccessPermission(const GURL& security_origin,
+                                  blink::MediaStreamType type) const;
 
  private:
   explicit WebContentsPermissionHelper(content::WebContents* web_contents);
   friend class content::WebContentsUserData<WebContentsPermissionHelper>;
 
-  void RequestPermission(
-      content::PermissionType permission,
-      const base::Callback<void(bool)>& callback,
-      bool user_gesture = false);
+  void RequestPermission(content::PermissionType permission,
+                         const base::Callback<void(bool)>& callback,
+                         bool user_gesture = false,
+                         const base::DictionaryValue* details = nullptr);
+
+  bool CheckPermission(content::PermissionType permission,
+                       const base::DictionaryValue* details) const;
 
   content::WebContents* web_contents_;
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(WebContentsPermissionHelper);
 };

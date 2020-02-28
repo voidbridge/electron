@@ -8,9 +8,10 @@
 #include <memory>
 #include <string>
 
-#include "atom/browser/api/atom_api_window.h"
+#include "atom/browser/api/atom_api_top_level_window.h"
 #include "atom/browser/api/trackable_object.h"
 #include "atom/browser/ui/atom_menu_model.h"
+#include "atom/common/api/locker.h"
 #include "base/callback.h"
 
 namespace atom {
@@ -18,7 +19,8 @@ namespace atom {
 namespace api {
 
 class Menu : public mate::TrackableObject<Menu>,
-             public AtomMenuModel::Delegate {
+             public AtomMenuModel::Delegate,
+             public AtomMenuModel::Observer {
  public:
   static mate::WrappableBase* New(mate::Arguments* args);
 
@@ -46,19 +48,33 @@ class Menu : public mate::TrackableObject<Menu>,
   bool IsCommandIdChecked(int command_id) const override;
   bool IsCommandIdEnabled(int command_id) const override;
   bool IsCommandIdVisible(int command_id) const override;
+  bool ShouldCommandIdWorkWhenHidden(int command_id) const override;
   bool GetAcceleratorForCommandIdWithParams(
       int command_id,
       bool use_default_accelerator,
       ui::Accelerator* accelerator) const override;
+  bool ShouldRegisterAcceleratorForCommandId(int command_id) const override;
   void ExecuteCommand(int command_id, int event_flags) override;
-  void MenuWillShow(ui::SimpleMenuModel* source) override;
+  void OnMenuWillShow(ui::SimpleMenuModel* source) override;
 
-  virtual void PopupAt(Window* window,
-                       int x = -1, int y = -1,
-                       int positioning_item = 0) = 0;
+  virtual void PopupAt(TopLevelWindow* window,
+                       int x,
+                       int y,
+                       int positioning_item,
+                       base::OnceClosure callback) = 0;
+  virtual void ClosePopupAt(int32_t window_id) = 0;
 
   std::unique_ptr<AtomMenuModel> model_;
-  Menu* parent_;
+  Menu* parent_ = nullptr;
+
+  // Observable:
+  void OnMenuWillClose() override;
+  void OnMenuWillShow() override;
+
+ protected:
+  // Returns a new callback which keeps references of the JS wrapper until the
+  // passed |callback| is called.
+  base::OnceClosure BindSelfToClosure(base::OnceClosure callback);
 
  private:
   void InsertItemAt(int index, int command_id, const base::string16& label);
@@ -83,17 +99,23 @@ class Menu : public mate::TrackableObject<Menu>,
   int GetCommandIdAt(int index) const;
   base::string16 GetLabelAt(int index) const;
   base::string16 GetSublabelAt(int index) const;
+  base::string16 GetAcceleratorTextAt(int index) const;
   bool IsItemCheckedAt(int index) const;
   bool IsEnabledAt(int index) const;
   bool IsVisibleAt(int index) const;
+  bool WorksWhenHiddenAt(int index) const;
 
   // Stored delegate methods.
-  base::Callback<bool(int)> is_checked_;
-  base::Callback<bool(int)> is_enabled_;
-  base::Callback<bool(int)> is_visible_;
-  base::Callback<v8::Local<v8::Value>(int, bool)> get_accelerator_;
-  base::Callback<void(v8::Local<v8::Value>, int)> execute_command_;
-  base::Callback<void()> menu_will_show_;
+  base::Callback<bool(v8::Local<v8::Value>, int)> is_checked_;
+  base::Callback<bool(v8::Local<v8::Value>, int)> is_enabled_;
+  base::Callback<bool(v8::Local<v8::Value>, int)> is_visible_;
+  base::Callback<bool(v8::Local<v8::Value>, int)> works_when_hidden_;
+  base::Callback<v8::Local<v8::Value>(v8::Local<v8::Value>, int, bool)>
+      get_accelerator_;
+  base::Callback<bool(v8::Local<v8::Value>, int)> should_register_accelerator_;
+  base::Callback<void(v8::Local<v8::Value>, v8::Local<v8::Value>, int)>
+      execute_command_;
+  base::Callback<void(v8::Local<v8::Value>)> menu_will_show_;
 
   DISALLOW_COPY_AND_ASSIGN(Menu);
 };
@@ -102,12 +124,12 @@ class Menu : public mate::TrackableObject<Menu>,
 
 }  // namespace atom
 
-
 namespace mate {
 
-template<>
+template <>
 struct Converter<atom::AtomMenuModel*> {
-  static bool FromV8(v8::Isolate* isolate, v8::Local<v8::Value> val,
+  static bool FromV8(v8::Isolate* isolate,
+                     v8::Local<v8::Value> val,
                      atom::AtomMenuModel** out) {
     // null would be tranfered to NULL.
     if (val->IsNull()) {

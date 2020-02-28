@@ -5,6 +5,7 @@
 #ifndef ATOM_BROWSER_UI_TRAY_ICON_GTK_H_
 #define ATOM_BROWSER_UI_TRAY_ICON_GTK_H_
 
+#include <memory>
 #include <string>
 
 #include "atom/browser/ui/tray_icon.h"
@@ -16,11 +17,10 @@ class StatusIconLinux;
 
 namespace atom {
 
-class TrayIconGtk : public TrayIcon,
-                    public views::StatusIconLinux::Delegate {
+class TrayIconGtk : public TrayIcon, public views::StatusIconLinux::Delegate {
  public:
   TrayIconGtk();
-  virtual ~TrayIconGtk();
+  ~TrayIconGtk() override;
 
   // TrayIcon:
   void SetImage(const gfx::Image& image) override;

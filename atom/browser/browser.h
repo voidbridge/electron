@@ -5,11 +5,13 @@
 #ifndef ATOM_BROWSER_BROWSER_H_
 #define ATOM_BROWSER_BROWSER_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "atom/browser/browser_observer.h"
 #include "atom/browser/window_list_observer.h"
+#include "atom/common/promise_util.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
@@ -18,6 +20,7 @@
 #include "native_mate/arguments.h"
 
 #if defined(OS_WIN)
+#include <windows.h>
 #include "base/files/file_path.h"
 #endif
 
@@ -32,13 +35,12 @@ class Image;
 namespace atom {
 
 class AtomMenuModel;
-class LoginHandler;
 
 // This class is used for control application-wide operations.
 class Browser : public WindowListObserver {
  public:
   Browser();
-  ~Browser();
+  ~Browser() override;
 
   static Browser* Get();
 
@@ -98,11 +100,20 @@ class Browser : public WindowListObserver {
     bool restore_state = false;
     bool opened_at_login = false;
     bool opened_as_hidden = false;
+    base::string16 path;
+    std::vector<base::string16> args;
+
+    LoginItemSettings();
+    ~LoginItemSettings();
+    LoginItemSettings(const LoginItemSettings&);
   };
   void SetLoginItemSettings(LoginItemSettings settings);
-  LoginItemSettings GetLoginItemSettings();
+  LoginItemSettings GetLoginItemSettings(const LoginItemSettings& options);
 
 #if defined(OS_MACOSX)
+  // Set the handler which decides whether to shutdown.
+  void SetShutdownHandler(base::Callback<bool()> handler);
+
   // Hide the application.
   void Hide();
 
@@ -117,9 +128,31 @@ class Browser : public WindowListObserver {
   // Returns the type name of the current user activity.
   std::string GetCurrentActivityType();
 
+  // Invalidates the current user activity.
+  void InvalidateCurrentActivity();
+
+  // Updates the current user activity
+  void UpdateCurrentActivity(const std::string& type,
+                             const base::DictionaryValue& user_info);
+
+  // Indicates that an user activity is about to be resumed.
+  bool WillContinueUserActivity(const std::string& type);
+
+  // Indicates a failure to resume a Handoff activity.
+  void DidFailToContinueUserActivity(const std::string& type,
+                                     const std::string& error);
+
   // Resumes an activity via hand-off.
   bool ContinueUserActivity(const std::string& type,
                             const base::DictionaryValue& user_info);
+
+  // Indicates that an activity was continued on another device.
+  void UserActivityWasContinued(const std::string& type,
+                                const base::DictionaryValue& user_info);
+
+  // Gives an oportunity to update the Handoff payload.
+  bool UpdateUserActivityState(const std::string& type,
+                               const base::DictionaryValue& user_info);
 
   // Bounce the dock icon.
   enum BounceType {
@@ -138,7 +171,7 @@ class Browser : public WindowListObserver {
 
   // Hide/Show dock.
   void DockHide();
-  void DockShow();
+  v8::Local<v8::Promise> DockShow(v8::Isolate* isolate);
   bool DockIsVisible();
 
   // Set docks' menu.
@@ -147,9 +180,16 @@ class Browser : public WindowListObserver {
   // Set docks' icon.
   void DockSetIcon(const gfx::Image& image);
 
+#endif  // defined(OS_MACOSX)
+
+#if defined(OS_MACOSX) || defined(OS_LINUX)
   void ShowAboutPanel();
   void SetAboutPanelOptions(const base::DictionaryValue& options);
-#endif  // defined(OS_MACOSX)
+#endif
+
+#if defined(OS_MACOSX) || defined(OS_WIN)
+  void ShowEmojiPanel();
+#endif
 
 #if defined(OS_WIN)
   struct UserTask {
@@ -157,8 +197,13 @@ class Browser : public WindowListObserver {
     base::string16 arguments;
     base::string16 title;
     base::string16 description;
+    base::FilePath working_dir;
     base::FilePath icon_path;
     int icon_index;
+
+    UserTask();
+    UserTask(const UserTask&);
+    ~UserTask();
   };
 
   // Add a custom task to jump list.
@@ -181,9 +226,16 @@ class Browser : public WindowListObserver {
   // Tell the application to open a url.
   void OpenURL(const std::string& url);
 
+#if defined(OS_MACOSX)
+  // Tell the application to create a new window for a tab.
+  void NewWindowForTab();
+#endif  // defined(OS_MACOSX)
+
   // Tell the application that application is activated with visible/invisible
   // windows.
   void Activate(bool has_visible_windows);
+
+  bool IsEmojiPanelSupported();
 
   // Tell the application the loading has been done.
   void WillFinishLaunching();
@@ -192,20 +244,23 @@ class Browser : public WindowListObserver {
   void OnAccessibilitySupportChanged();
 
   // Request basic auth login.
-  void RequestLogin(LoginHandler* login_handler,
+  void RequestLogin(scoped_refptr<LoginHandler> login_handler,
                     std::unique_ptr<base::DictionaryValue> request_details);
 
-  void AddObserver(BrowserObserver* obs) {
-    observers_.AddObserver(obs);
-  }
+  void PreMainMessageLoopRun();
 
-  void RemoveObserver(BrowserObserver* obs) {
-    observers_.RemoveObserver(obs);
-  }
+  // Stores the supplied |quit_closure|, to be run when the last Browser
+  // instance is destroyed.
+  void SetMainMessageLoopQuitClosure(base::OnceClosure quit_closure);
+
+  void AddObserver(BrowserObserver* obs) { observers_.AddObserver(obs); }
+
+  void RemoveObserver(BrowserObserver* obs) { observers_.RemoveObserver(obs); }
 
   bool is_shutting_down() const { return is_shutdown_; }
   bool is_quiting() const { return is_quiting_; }
   bool is_ready() const { return is_ready_; }
+  const util::Promise& WhenReady(v8::Isolate* isolate);
 
  protected:
   // Returns the version of application bundle or executable file.
@@ -220,7 +275,7 @@ class Browser : public WindowListObserver {
   // Send the before-quit message and start closing windows.
   bool HandleBeforeQuit();
 
-  bool is_quiting_;
+  bool is_quiting_ = false;
 
  private:
   // WindowListObserver implementations:
@@ -231,24 +286,22 @@ class Browser : public WindowListObserver {
   base::ObserverList<BrowserObserver> observers_;
 
   // Whether `app.exit()` has been called
-  bool is_exiting_;
+  bool is_exiting_ = false;
 
   // Whether "ready" event has been emitted.
-  bool is_ready_;
+  bool is_ready_ = false;
 
   // The browser is being shutdown.
-  bool is_shutdown_;
+  bool is_shutdown_ = false;
 
-  std::string version_override_;
-  std::string name_override_;
+  // Null until/unless the default main message loop is running.
+  base::OnceClosure quit_main_message_loop_;
 
   int badge_count_ = 0;
 
-#if defined(OS_WIN)
-  base::string16 app_user_model_id_;
-#endif
+  std::unique_ptr<util::Promise> ready_promise_;
 
-#if defined(OS_MACOSX)
+#if defined(OS_LINUX) || defined(OS_MACOSX)
   base::DictionaryValue about_panel_options_;
 #endif
 

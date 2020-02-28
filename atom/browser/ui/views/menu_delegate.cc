@@ -6,6 +6,8 @@
 
 #include "atom/browser/ui/views/menu_bar.h"
 #include "atom/browser/ui/views/menu_model_adapter.h"
+#include "base/task/post_task.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "ui/views/controls/button/menu_button.h"
 #include "ui/views/controls/menu/menu_item_view.h"
@@ -15,19 +17,22 @@
 namespace atom {
 
 MenuDelegate::MenuDelegate(MenuBar* menu_bar)
-    : menu_bar_(menu_bar),
-      id_(-1) {
-}
+    : menu_bar_(menu_bar), id_(-1), hold_first_switch_(false) {}
 
-MenuDelegate::~MenuDelegate() {
-}
+MenuDelegate::~MenuDelegate() {}
 
-void MenuDelegate::RunMenu(AtomMenuModel* model, views::MenuButton* button) {
+void MenuDelegate::RunMenu(AtomMenuModel* model,
+                           views::Button* button,
+                           ui::MenuSourceType source_type) {
   gfx::Point screen_loc;
   views::View::ConvertPointToScreen(button, &screen_loc);
   // Subtract 1 from the height to make the popup flush with the button border.
   gfx::Rect bounds(screen_loc.x(), screen_loc.y(), button->width(),
                    button->height() - 1);
+
+  if (source_type == ui::MENU_SOURCE_KEYBOARD) {
+    hold_first_switch_ = true;
+  }
 
   id_ = button->tag();
   adapter_.reset(new MenuModelAdapter(model));
@@ -38,19 +43,21 @@ void MenuDelegate::RunMenu(AtomMenuModel* model, views::MenuButton* button) {
   menu_runner_.reset(new views::MenuRunner(
       item,
       views::MenuRunner::CONTEXT_MENU | views::MenuRunner::HAS_MNEMONICS));
-  ignore_result(menu_runner_->RunMenuAt(
+  menu_runner_->RunMenuAt(
       button->GetWidget()->GetTopLevelWidget(),
-      button,
-      bounds,
-      views::MENU_ANCHOR_TOPRIGHT,
-      ui::MENU_SOURCE_MOUSE));
+      static_cast<views::MenuButton*>(button)->button_controller(), bounds,
+      views::MenuAnchorPosition::kTopRight, source_type);
 }
 
 void MenuDelegate::ExecuteCommand(int id) {
+  for (Observer& obs : observers_)
+    obs.OnBeforeExecuteCommand();
   adapter_->ExecuteCommand(id);
 }
 
 void MenuDelegate::ExecuteCommand(int id, int mouse_event_flags) {
+  for (Observer& obs : observers_)
+    obs.OnBeforeExecuteCommand();
   adapter_->ExecuteCommand(id, mouse_event_flags);
 }
 
@@ -67,8 +74,8 @@ base::string16 MenuDelegate::GetLabel(int id) const {
   return adapter_->GetLabel(id);
 }
 
-const gfx::FontList* MenuDelegate::GetLabelFontList(int id) const {
-  return adapter_->GetLabelFontList(id);
+void MenuDelegate::GetLabelStyle(int id, LabelStyle* style) const {
+  return adapter_->GetLabelStyle(id, style);
 }
 
 bool MenuDelegate::IsCommandEnabled(int id) const {
@@ -83,10 +90,6 @@ bool MenuDelegate::IsItemChecked(int id) const {
   return adapter_->IsItemChecked(id);
 }
 
-void MenuDelegate::SelectionChanged(views::MenuItemView* menu) {
-  adapter_->SelectionChanged(menu);
-}
-
 void MenuDelegate::WillShowMenu(views::MenuItemView* menu) {
   adapter_->WillShowMenu(menu);
 }
@@ -95,24 +98,43 @@ void MenuDelegate::WillHideMenu(views::MenuItemView* menu) {
   adapter_->WillHideMenu(menu);
 }
 
+void MenuDelegate::OnMenuClosed(views::MenuItemView* menu) {
+  for (Observer& obs : observers_)
+    obs.OnMenuClosed();
+
+  // Only switch to new menu when current menu is closed.
+  if (button_to_open_)
+    button_to_open_->Activate(nullptr);
+  delete this;
+}
+
 views::MenuItemView* MenuDelegate::GetSiblingMenu(
     views::MenuItemView* menu,
     const gfx::Point& screen_point,
     views::MenuAnchorPosition* anchor,
     bool* has_mnemonics,
     views::MenuButton**) {
+  if (hold_first_switch_) {
+    hold_first_switch_ = false;
+    return nullptr;
+  }
+
+  // TODO(zcbenz): We should follow Chromium's logics on implementing the
+  // sibling menu switches, this code is almost a hack.
   views::MenuButton* button;
   AtomMenuModel* model;
   if (menu_bar_->GetMenuButtonFromScreenPoint(screen_point, &model, &button) &&
       button->tag() != id_) {
-    DCHECK(menu_runner_->IsRunning());
-    menu_runner_->Cancel();
-    // After canceling the menu, we need to wait until next tick
-    // so we are out of nested message loop.
-    content::BrowserThread::PostTask(
-        content::BrowserThread::UI, FROM_HERE,
-        base::Bind(base::IgnoreResult(&views::MenuButton::Activate),
-                   base::Unretained(button), nullptr));
+    bool switch_in_progress = !!button_to_open_;
+    // Always update target to open.
+    button_to_open_ = button;
+    // Switching menu asyncnously to avoid crash.
+    if (!switch_in_progress) {
+      base::PostTaskWithTraits(
+          FROM_HERE, {content::BrowserThread::UI},
+          base::Bind(&views::MenuRunner::Cancel,
+                     base::Unretained(menu_runner_.get())));
+    }
   }
 
   return nullptr;

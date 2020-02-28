@@ -1,12 +1,40 @@
 <html>
 <script type="text/javascript" charset="utf-8">
-  if (window.opener) {
+  function timeout(ms) {
+    return new Promise((resolve) => {
+      setTimeout(resolve, ms)
+    })
+  }
+  async function invokeGc () {
+    // it seems calling window.gc once does not guarantee garbage will be
+    // collected, so we repeat 10 times with interval of 100 ms
+    for (let i = 0; i < 10; i++) {
+      window.gc()
+      await timeout(100)
+    }
+  }
+
+  const [,test] = window.location.href.split('?')
+  if (window.opener && test !== 'reload-remote') {
     window.callback = () => {
       opener.require('electron').ipcRenderer.send('answer', document.body.innerHTML)
     }
   } else {
-    const {ipcRenderer} = require('electron')
+    const {ipcRenderer, remote} = require('electron')
     const tests = {
+      'reload-remote-child': () => {
+        open(`${location.protocol}//${location.pathname}?reload-remote`)
+      },
+      'reload-remote': async () => {
+        const p = ipcRenderer.sendSync('get-remote-module-path')
+        const Hello = remote.require(p)
+        if (!ipcRenderer.sendSync('reloaded')) {
+          ipcRenderer.send('reload')
+          return
+        }
+        await invokeGc()
+        ipcRenderer.send('answer', new Hello().say())
+      },
       'window-events': () => {
         document.title = 'changed'
       },
@@ -38,14 +66,19 @@
       },
       'window-open-external': () => {
         addEventListener('load', () => {
-          ipcRenderer.once('child-loaded', (e) => {
-            try {
-              let childDoc = popup.document
-            } catch (e) {
-              ipcRenderer.send('answer', e.message)
-            }
+          ipcRenderer.once('open-the-popup', (event, url) => {
+            popup = open(url, '', 'top=65,left=55,width=505,height=605')
           })
-          popup = open('http://www.google.com/#q=electron', '', 'top=65,left=55,width=505,height=605')
+          ipcRenderer.once('touch-the-popup', () => {
+            let errorMessage = null
+            try {
+              const childDoc = popup.document
+            } catch (error) {
+              errorMessage = error.message
+            }
+            ipcRenderer.send('answer', errorMessage)
+          })
+          ipcRenderer.send('opener-loaded')
         })
       },
       'verify-ipc-sender': () => {
@@ -56,10 +89,8 @@
         popup.ipcRenderer.once('verified', () => {
           popup.ipcRenderer.send('child-answer')
         })
-        setTimeout(() => {
-          ipcRenderer.send('parent-ready')
-          popup.ipcRenderer.send('child-ready')
-        }, 50)
+        ipcRenderer.send('parent-ready')
+        popup.ipcRenderer.send('child-ready')
       }
     }
 
@@ -68,7 +99,6 @@
         popup.close()
     }, false)
 
-    let [,test] = window.location.href.split('?')
     if (tests.hasOwnProperty(test))
       tests[test]()
   }

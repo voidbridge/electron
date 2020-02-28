@@ -5,12 +5,20 @@
 #include "atom/browser/net/url_request_fetch_job.h"
 
 #include <algorithm>
+#include <memory>
 #include <string>
+#include <utility>
 
 #include "atom/browser/api/atom_api_session.h"
 #include "atom/browser/atom_browser_context.h"
+#include "atom/common/native_mate_converters/net_converter.h"
+#include "atom/common/native_mate_converters/v8_value_converter.h"
+#include "base/guid.h"
 #include "base/memory/ptr_util.h"
 #include "base/strings/string_util.h"
+#include "base/task/post_task.h"
+#include "content/public/browser/browser_task_traits.h"
+#include "content/public/browser/browser_thread.h"
 #include "native_mate/dictionary.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
@@ -46,75 +54,112 @@ net::URLFetcher::RequestType GetRequestType(const std::string& raw) {
 // Pipe the response writer back to URLRequestFetchJob.
 class ResponsePiper : public net::URLFetcherResponseWriter {
  public:
-  explicit ResponsePiper(URLRequestFetchJob* job)
-      : first_write_(true), job_(job) {}
+  explicit ResponsePiper(URLRequestFetchJob* job) : job_(job) {}
 
   // net::URLFetcherResponseWriter:
-  int Initialize(const net::CompletionCallback& callback) override {
+  int Initialize(net::CompletionOnceCallback callback) override {
     return net::OK;
   }
   int Write(net::IOBuffer* buffer,
             int num_bytes,
-            const net::CompletionCallback& callback) override {
+            net::CompletionOnceCallback callback) override {
     if (first_write_) {
       // The URLFetcherResponseWriter doesn't have an event when headers have
       // been read, so we have to emulate by hooking to first write event.
       job_->HeadersCompleted();
       first_write_ = false;
     }
-    return job_->DataAvailable(buffer, num_bytes, callback);
+    return job_->DataAvailable(buffer, num_bytes, std::move(callback));
   }
-  int Finish(const net::CompletionCallback& callback) override {
+  int Finish(int net_error, net::CompletionOnceCallback callback) override {
     return net::OK;
   }
 
  private:
-  bool first_write_;
+  bool first_write_ = true;
   URLRequestFetchJob* job_;
 
   DISALLOW_COPY_AND_ASSIGN(ResponsePiper);
 };
 
-}  // namespace
-
-URLRequestFetchJob::URLRequestFetchJob(
-    net::URLRequest* request, net::NetworkDelegate* network_delegate)
-    : JsAsker<net::URLRequestJob>(request, network_delegate),
-      pending_buffer_size_(0),
-      write_num_bytes_(0) {
-}
-
-void URLRequestFetchJob::BeforeStartInUI(
-    v8::Isolate* isolate, v8::Local<v8::Value> value) {
+void BeforeStartInUI(base::WeakPtr<URLRequestFetchJob> job,
+                     mate::Arguments* args) {
+  // Pass whatever user passed to the actaul request job.
+  v8::Local<v8::Value> value;
   mate::Dictionary options;
-  if (!mate::ConvertFromV8(isolate, value, &options))
+  if (!args->GetNext(&value) ||
+      !mate::ConvertFromV8(args->isolate(), value, &options)) {
+    base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::IO},
+                             base::BindOnce(&URLRequestFetchJob::OnError, job,
+                                            net::ERR_NOT_IMPLEMENTED));
     return;
+  }
 
-  // When |session| is set to |null| we use a new request context for fetch job.
-  v8::Local<v8::Value> val;
-  if (options.Get("session", &val)) {
-    if (val->IsNull()) {
+  scoped_refptr<net::URLRequestContextGetter> url_request_context_getter;
+  scoped_refptr<AtomBrowserContext> custom_browser_context;
+  // When |session| is set to |null| we use a new request context for fetch
+  // job.
+  if (options.Get("session", &value)) {
+    if (value->IsNull()) {
       // We have to create the URLRequestContextGetter on UI thread.
-      url_request_context_getter_ = new brightray::URLRequestContextGetter(
-          this, nullptr, nullptr, base::FilePath(), true,
-          BrowserThread::UnsafeGetMessageLoopForThread(BrowserThread::IO),
-          BrowserThread::UnsafeGetMessageLoopForThread(BrowserThread::FILE),
-          nullptr, content::URLRequestInterceptorScopedVector());
+      custom_browser_context =
+          AtomBrowserContext::From(base::GenerateGUID(), true);
+      url_request_context_getter = custom_browser_context->GetRequestContext();
     } else {
       mate::Handle<api::Session> session;
-      if (mate::ConvertFromV8(isolate, val, &session) && !session.IsEmpty()) {
+      if (mate::ConvertFromV8(args->isolate(), value, &session) &&
+          !session.IsEmpty()) {
         AtomBrowserContext* browser_context = session->browser_context();
-        url_request_context_getter_ =
-            browser_context->url_request_context_getter();
+        url_request_context_getter = browser_context->GetRequestContext();
       }
     }
   }
+
+  V8ValueConverter converter;
+  v8::Local<v8::Context> context = args->isolate()->GetCurrentContext();
+  std::unique_ptr<base::Value> request_options(
+      converter.FromV8Value(value, context));
+
+  int error = net::OK;
+  if (!request_options || !request_options->is_dict())
+    error = net::ERR_NOT_IMPLEMENTED;
+
+  JsAsker::IsErrorOptions(request_options.get(), &error);
+
+  base::PostTaskWithTraits(
+      FROM_HERE, {content::BrowserThread::IO},
+      base::BindOnce(&URLRequestFetchJob::StartAsync, job,
+                     base::RetainedRef(url_request_context_getter),
+                     base::RetainedRef(custom_browser_context),
+                     std::move(request_options), error));
 }
 
-void URLRequestFetchJob::StartAsync(std::unique_ptr<base::Value> options) {
-  if (!options->IsType(base::Value::TYPE_DICTIONARY)) {
-    NotifyStartError(net::URLRequestStatus(
-          net::URLRequestStatus::FAILED, net::ERR_NOT_IMPLEMENTED));
+}  // namespace
+
+URLRequestFetchJob::URLRequestFetchJob(net::URLRequest* request,
+                                       net::NetworkDelegate* network_delegate)
+    : net::URLRequestJob(request, network_delegate), weak_factory_(this) {}
+
+URLRequestFetchJob::~URLRequestFetchJob() = default;
+
+void URLRequestFetchJob::Start() {
+  auto request_details = std::make_unique<base::DictionaryValue>();
+  FillRequestDetails(request_details.get(), request());
+  base::PostTaskWithTraits(
+      FROM_HERE, {content::BrowserThread::UI},
+      base::BindOnce(&JsAsker::AskForOptions, base::Unretained(isolate()),
+                     handler(), std::move(request_details),
+                     base::Bind(&BeforeStartInUI, weak_factory_.GetWeakPtr())));
+}
+
+void URLRequestFetchJob::StartAsync(
+    scoped_refptr<net::URLRequestContextGetter> url_request_context_getter,
+    scoped_refptr<AtomBrowserContext> browser_context,
+    std::unique_ptr<base::Value> options,
+    int error) {
+  if (error != net::OK) {
+    NotifyStartError(
+        net::URLRequestStatus(net::URLRequestStatus::FAILED, error));
     return;
   }
 
@@ -130,8 +175,8 @@ void URLRequestFetchJob::StartAsync(std::unique_ptr<base::Value> options) {
   // Check if URL is valid.
   GURL formated_url(url);
   if (!formated_url.is_valid()) {
-    NotifyStartError(net::URLRequestStatus(
-          net::URLRequestStatus::FAILED, net::ERR_INVALID_URL));
+    NotifyStartError(net::URLRequestStatus(net::URLRequestStatus::FAILED,
+                                           net::ERR_INVALID_URL));
     return;
   }
 
@@ -146,8 +191,8 @@ void URLRequestFetchJob::StartAsync(std::unique_ptr<base::Value> options) {
   fetcher_->SaveResponseWithWriter(base::WrapUnique(new ResponsePiper(this)));
 
   // A request context getter is passed by the user.
-  if (url_request_context_getter_)
-    fetcher_->SetRequestContext(url_request_context_getter_.get());
+  if (url_request_context_getter)
+    fetcher_->SetRequestContext(url_request_context_getter.get());
   else
     fetcher_->SetRequestContext(request_context_getter());
 
@@ -170,6 +215,13 @@ void URLRequestFetchJob::StartAsync(std::unique_ptr<base::Value> options) {
       request()->extra_request_headers().ToString());
 
   fetcher_->Start();
+
+  if (browser_context)
+    custom_browser_context_ = browser_context;
+}
+
+void URLRequestFetchJob::OnError(int error) {
+  NotifyStartError(net::URLRequestStatus(net::URLRequestStatus::FAILED, error));
 }
 
 void URLRequestFetchJob::HeadersCompleted() {
@@ -180,28 +232,30 @@ void URLRequestFetchJob::HeadersCompleted() {
 
 int URLRequestFetchJob::DataAvailable(net::IOBuffer* buffer,
                                       int num_bytes,
-                                      const net::CompletionCallback& callback) {
+                                      net::CompletionOnceCallback callback) {
   // When pending_buffer_ is empty, there's no ReadRawData() operation waiting
   // for IO completion, we have to save the parameters until the request is
   // ready to read data.
   if (!pending_buffer_.get()) {
     write_buffer_ = buffer;
     write_num_bytes_ = num_bytes;
-    write_callback_ = callback;
+    write_callback_ = std::move(callback);
     return net::ERR_IO_PENDING;
   }
 
   // Write data to the pending buffer and clear them after the writing.
-  int bytes_read = BufferCopy(buffer, num_bytes,
-                              pending_buffer_.get(), pending_buffer_size_);
+  int bytes_read = BufferCopy(buffer, num_bytes, pending_buffer_.get(),
+                              pending_buffer_size_);
   ClearPendingBuffer();
   ReadRawDataComplete(bytes_read);
   return bytes_read;
 }
 
 void URLRequestFetchJob::Kill() {
-  JsAsker<URLRequestJob>::Kill();
+  weak_factory_.InvalidateWeakPtrs();
+  net::URLRequestJob::Kill();
   fetcher_.reset();
+  custom_browser_context_ = nullptr;
 }
 
 int URLRequestFetchJob::ReadRawData(net::IOBuffer* dest, int dest_size) {
@@ -219,11 +273,11 @@ int URLRequestFetchJob::ReadRawData(net::IOBuffer* dest, int dest_size) {
   }
 
   // Read from the write buffer and clear them after reading.
-  int bytes_read = BufferCopy(write_buffer_.get(), write_num_bytes_,
-                              dest, dest_size);
-  net::CompletionCallback write_callback = write_callback_;
+  int bytes_read =
+      BufferCopy(write_buffer_.get(), write_num_bytes_, dest, dest_size);
   ClearWriteBuffer();
-  write_callback.Run(bytes_read);
+  if (!write_callback_.is_null())
+    std::move(write_callback_).Run(bytes_read);
   return bytes_read;
 }
 
@@ -258,14 +312,18 @@ void URLRequestFetchJob::OnURLFetchComplete(const net::URLFetcher* source) {
       HeadersCompleted();
       return;
     }
-    ReadRawDataComplete(0);
+    if (request_->status().is_io_pending()) {
+      ReadRawDataComplete(0);
+    }
   } else {
     NotifyStartError(fetcher_->GetStatus());
   }
 }
 
-int URLRequestFetchJob::BufferCopy(net::IOBuffer* source, int num_bytes,
-                                   net::IOBuffer* target, int target_size) {
+int URLRequestFetchJob::BufferCopy(net::IOBuffer* source,
+                                   int num_bytes,
+                                   net::IOBuffer* target,
+                                   int target_size) {
   int bytes_written = std::min(num_bytes, target_size);
   memcpy(target->data(), source->data(), bytes_written);
   return bytes_written;
@@ -279,7 +337,6 @@ void URLRequestFetchJob::ClearPendingBuffer() {
 void URLRequestFetchJob::ClearWriteBuffer() {
   write_buffer_ = nullptr;
   write_num_bytes_ = 0;
-  write_callback_.Reset();
 }
 
 }  // namespace atom

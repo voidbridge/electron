@@ -5,11 +5,9 @@
 #ifndef ATOM_BROWSER_UI_X_X_WINDOW_UTILS_H_
 #define ATOM_BROWSER_UI_X_X_WINDOW_UTILS_H_
 
-#include <X11/extensions/XInput2.h>
-#include <X11/extensions/Xrandr.h>
-#include <X11/Xlib.h>
-
 #include <string>
+
+#include "ui/gfx/x/x11.h"
 
 namespace atom {
 
@@ -24,6 +22,9 @@ void SetWindowType(::Window xwindow, const std::string& type);
 
 // Returns true if the bus name "com.canonical.AppMenu.Registrar" is available.
 bool ShouldUseGlobalMenuBar();
+
+// Bring the given window to the front and give it the focus.
+void MoveWindowToForeground(::Window xwindow);
 
 }  // namespace atom
 

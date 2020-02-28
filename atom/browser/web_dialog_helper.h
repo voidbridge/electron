@@ -5,17 +5,20 @@
 #ifndef ATOM_BROWSER_WEB_DIALOG_HELPER_H_
 #define ATOM_BROWSER_WEB_DIALOG_HELPER_H_
 
+#include <memory>
+
 #include "base/memory/weak_ptr.h"
+#include "third_party/blink/public/mojom/choosers/file_chooser.mojom.h"
 
 namespace base {
 class FilePath;
 }
 
 namespace content {
-struct FileChooserParams;
+class FileSelectListener;
 class RenderFrameHost;
 class WebContents;
-}
+}  // namespace content
 
 namespace atom {
 
@@ -23,17 +26,19 @@ class NativeWindow;
 
 class WebDialogHelper {
  public:
-  explicit WebDialogHelper(NativeWindow* window);
+  WebDialogHelper(NativeWindow* window, bool offscreen);
   ~WebDialogHelper();
 
   void RunFileChooser(content::RenderFrameHost* render_frame_host,
-                      const content::FileChooserParams& params);
+                      std::unique_ptr<content::FileSelectListener> listener,
+                      const blink::mojom::FileChooserParams& params);
   void EnumerateDirectory(content::WebContents* web_contents,
-                          int request_id,
+                          std::unique_ptr<content::FileSelectListener> listener,
                           const base::FilePath& path);
 
  private:
   NativeWindow* window_;
+  bool offscreen_;
 
   base::WeakPtrFactory<WebDialogHelper> weak_factory_;
 

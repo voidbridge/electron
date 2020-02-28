@@ -13,15 +13,15 @@
 
 namespace accelerator_util {
 
-typedef struct { int position; atom::AtomMenuModel* model; } MenuItem;
+typedef struct {
+  int position;
+  atom::AtomMenuModel* model;
+} MenuItem;
 typedef std::map<ui::Accelerator, MenuItem> AcceleratorTable;
 
 // Parse a string as an accelerator.
 bool StringToAccelerator(const std::string& description,
                          ui::Accelerator* accelerator);
-
-// Set platform accelerator for the Accelerator.
-void SetPlatformAccelerator(ui::Accelerator* accelerator);
 
 // Generate a table that contains memu model's accelerators and command ids.
 void GenerateAcceleratorTable(AcceleratorTable* table,

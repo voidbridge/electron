@@ -9,8 +9,11 @@
 #include <utility>
 #include <vector>
 
+#include "atom/common/native_mate_converters/file_path_converter.h"
+#include "atom/common/promise_util.h"
 #include "base/callback_forward.h"
 #include "base/files/file_path.h"
+#include "native_mate/dictionary.h"
 
 namespace atom {
 class NativeWindow;
@@ -19,52 +22,48 @@ class NativeWindow;
 namespace file_dialog {
 
 // <description, extensions>
-typedef std::pair<std::string, std::vector<std::string> > Filter;
+typedef std::pair<std::string, std::vector<std::string>> Filter;
 typedef std::vector<Filter> Filters;
 
 enum FileDialogProperty {
-  FILE_DIALOG_OPEN_FILE         = 1 << 0,
-  FILE_DIALOG_OPEN_DIRECTORY    = 1 << 1,
-  FILE_DIALOG_MULTI_SELECTIONS  = 1 << 2,
-  FILE_DIALOG_CREATE_DIRECTORY  = 1 << 3,
+  FILE_DIALOG_OPEN_FILE = 1 << 0,
+  FILE_DIALOG_OPEN_DIRECTORY = 1 << 1,
+  FILE_DIALOG_MULTI_SELECTIONS = 1 << 2,
+  FILE_DIALOG_CREATE_DIRECTORY = 1 << 3,
   FILE_DIALOG_SHOW_HIDDEN_FILES = 1 << 4,
+  FILE_DIALOG_PROMPT_TO_CREATE = 1 << 5,
+  FILE_DIALOG_NO_RESOLVE_ALIASES = 1 << 6,
+  FILE_DIALOG_TREAT_PACKAGE_APP_AS_DIRECTORY = 1 << 7,
 };
 
-typedef base::Callback<void(
-    bool result, const std::vector<base::FilePath>& paths)> OpenDialogCallback;
+struct DialogSettings {
+  atom::NativeWindow* parent_window = nullptr;
+  std::string title;
+  std::string message;
+  std::string button_label;
+  std::string name_field_label;
+  base::FilePath default_path;
+  Filters filters;
+  int properties = 0;
+  bool shows_tag_field = true;
+  bool force_detached = false;
+  bool security_scoped_bookmarks = false;
 
-typedef base::Callback<void(
-    bool result, const base::FilePath& path)> SaveDialogCallback;
+  DialogSettings();
+  DialogSettings(const DialogSettings&);
+  ~DialogSettings();
+};
 
-bool ShowOpenDialog(atom::NativeWindow* parent_window,
-                    const std::string& title,
-                    const std::string& button_label,
-                    const base::FilePath& default_path,
-                    const Filters& filters,
-                    int properties,
-                    std::vector<base::FilePath>* paths);
+bool ShowOpenDialogSync(const DialogSettings& settings,
+                        std::vector<base::FilePath>* paths);
 
-void ShowOpenDialog(atom::NativeWindow* parent_window,
-                    const std::string& title,
-                    const std::string& button_label,
-                    const base::FilePath& default_path,
-                    const Filters& filters,
-                    int properties,
-                    const OpenDialogCallback& callback);
+void ShowOpenDialog(const DialogSettings& settings,
+                    atom::util::Promise promise);
 
-bool ShowSaveDialog(atom::NativeWindow* parent_window,
-                    const std::string& title,
-                    const std::string& button_label,
-                    const base::FilePath& default_path,
-                    const Filters& filters,
-                    base::FilePath* path);
+bool ShowSaveDialogSync(const DialogSettings& settings, base::FilePath* path);
 
-void ShowSaveDialog(atom::NativeWindow* parent_window,
-                    const std::string& title,
-                    const std::string& button_label,
-                    const base::FilePath& default_path,
-                    const Filters& filters,
-                    const SaveDialogCallback& callback);
+void ShowSaveDialog(const DialogSettings& settings,
+                    atom::util::Promise promise);
 
 }  // namespace file_dialog
 

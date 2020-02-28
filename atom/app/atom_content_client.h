@@ -9,31 +9,29 @@
 #include <string>
 #include <vector>
 
-#include "brightray/common/content_client.h"
+#include "content/public/common/content_client.h"
 
 namespace atom {
 
-class AtomContentClient : public brightray::ContentClient {
+class AtomContentClient : public content::ContentClient {
  public:
   AtomContentClient();
-  virtual ~AtomContentClient();
+  ~AtomContentClient() override;
 
  protected:
   // content::ContentClient:
-  std::string GetProduct() const override;
-  std::string GetUserAgent() const override;
   base::string16 GetLocalizedString(int message_id) const override;
-  void AddAdditionalSchemes(
-      std::vector<url::SchemeWithType>* standard_schemes,
-      std::vector<url::SchemeWithType>* referrer_schemes,
-      std::vector<std::string>* savable_schemes) override;
+  base::StringPiece GetDataResource(int resource_id,
+                                    ui::ScaleFactor) const override;
+  gfx::Image& GetNativeImageNamed(int resource_id) const override;
+  base::RefCountedMemory* GetDataResourceBytes(int resource_id) const override;
+  void AddAdditionalSchemes(Schemes* schemes) override;
   void AddPepperPlugins(
       std::vector<content::PepperPluginInfo>* plugins) override;
-  void AddServiceWorkerSchemes(
-      std::set<std::string>* service_worker_schemes) override;
-  void AddSecureSchemesAndOrigins(
-      std::set<std::string>* secure_schemes,
-      std::set<GURL>* secure_origins) override;
+  void AddContentDecryptionModules(
+      std::vector<content::CdmInfo>* cdms,
+      std::vector<media::CdmHostFilePath>* cdm_host_file_paths) override;
+  bool IsDataResourceGzipped(int resource_id) const override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(AtomContentClient);

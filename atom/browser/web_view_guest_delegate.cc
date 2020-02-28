@@ -4,151 +4,120 @@
 
 #include "atom/browser/web_view_guest_delegate.h"
 
+#include <memory>
+
 #include "atom/browser/api/atom_api_web_contents.h"
 #include "atom/common/native_mate_converters/gurl_converter.h"
-#include "content/public/browser/guest_host.h"
+#include "content/browser/web_contents/web_contents_impl.h"  // nogncheck
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 
 namespace atom {
 
-namespace {
-
-const int kDefaultWidth = 300;
-const int kDefaultHeight = 300;
-
-}  // namespace
-
-WebViewGuestDelegate::WebViewGuestDelegate()
-    : guest_host_(nullptr),
-      auto_size_enabled_(false),
-      is_full_page_plugin_(false),
-      api_web_contents_(nullptr) {
-}
+WebViewGuestDelegate::WebViewGuestDelegate(content::WebContents* embedder,
+                                           api::WebContents* api_web_contents)
+    : embedder_web_contents_(embedder), api_web_contents_(api_web_contents) {}
 
 WebViewGuestDelegate::~WebViewGuestDelegate() {
+  ResetZoomController();
 }
 
-void WebViewGuestDelegate::Initialize(api::WebContents* api_web_contents) {
-  api_web_contents_ = api_web_contents;
-  Observe(api_web_contents->GetWebContents());
-}
+void WebViewGuestDelegate::AttachToIframe(
+    content::WebContents* embedder_web_contents,
+    int embedder_frame_id) {
+  embedder_web_contents_ = embedder_web_contents;
 
-void WebViewGuestDelegate::Destroy() {
-  // Give the content module an opportunity to perform some cleanup.
-  guest_host_->WillDestroy();
-  guest_host_ = nullptr;
-}
+  int embedder_process_id =
+      embedder_web_contents_->GetMainFrame()->GetProcess()->GetID();
+  auto* embedder_frame =
+      content::RenderFrameHost::FromID(embedder_process_id, embedder_frame_id);
+  DCHECK_EQ(embedder_web_contents_,
+            content::WebContents::FromRenderFrameHost(embedder_frame));
 
-void WebViewGuestDelegate::SetSize(const SetSizeParams& params) {
-  bool enable_auto_size =
-      params.enable_auto_size ? *params.enable_auto_size : auto_size_enabled_;
-  gfx::Size min_size = params.min_size ? *params.min_size : min_auto_size_;
-  gfx::Size max_size = params.max_size ? *params.max_size : max_auto_size_;
+  content::WebContents* guest_web_contents = api_web_contents_->web_contents();
+  // Attach this inner WebContents |guest_web_contents| to the outer
+  // WebContents |embedder_web_contents|. The outer WebContents's
+  // frame |embedder_frame| hosts the inner WebContents.
+  embedder_web_contents_->AttachInnerWebContents(
+      base::WrapUnique<content::WebContents>(guest_web_contents),
+      embedder_frame);
 
-  if (params.normal_size)
-    normal_size_ = *params.normal_size;
+  ResetZoomController();
 
-  min_auto_size_ = min_size;
-  min_auto_size_.SetToMin(max_size);
-  max_auto_size_ = max_size;
-  max_auto_size_.SetToMax(min_size);
+  embedder_zoom_controller_ =
+      WebContentsZoomController::FromWebContents(embedder_web_contents_);
+  embedder_zoom_controller_->AddObserver(this);
+  auto* zoom_controller = api_web_contents_->GetZoomController();
+  zoom_controller->SetEmbedderZoomController(embedder_zoom_controller_);
 
-  enable_auto_size &= !min_auto_size_.IsEmpty() && !max_auto_size_.IsEmpty();
-
-  auto rvh = web_contents()->GetRenderViewHost();
-  if (enable_auto_size) {
-    // Autosize is being enabled.
-    rvh->EnableAutoResize(min_auto_size_, max_auto_size_);
-    normal_size_.SetSize(0, 0);
-  } else {
-    // Autosize is being disabled.
-    // Use default width/height if missing from partially defined normal size.
-    if (normal_size_.width() && !normal_size_.height())
-      normal_size_.set_height(GetDefaultSize().height());
-    if (!normal_size_.width() && normal_size_.height())
-      normal_size_.set_width(GetDefaultSize().width());
-
-    gfx::Size new_size;
-    if (!normal_size_.IsEmpty()) {
-      new_size = normal_size_;
-    } else if (!guest_size_.IsEmpty()) {
-      new_size = guest_size_;
-    } else {
-      new_size = GetDefaultSize();
-    }
-
-    if (auto_size_enabled_) {
-      // Autosize was previously enabled.
-      rvh->DisableAutoResize(new_size);
-      GuestSizeChangedDueToAutoSize(guest_size_, new_size);
-    } else {
-      // Autosize was already disabled.
-      guest_host_->SizeContents(new_size);
-    }
-
-    guest_size_ = new_size;
-  }
-
-  auto_size_enabled_ = enable_auto_size;
-}
-
-void WebViewGuestDelegate::DidFinishNavigation(
-    content::NavigationHandle* navigation_handle) {
-  if (navigation_handle->HasCommitted() && !navigation_handle->IsErrorPage()) {
-    auto is_main_frame = navigation_handle->IsInMainFrame();
-    auto url = navigation_handle->GetURL();
-    api_web_contents_->Emit("load-commit", url, is_main_frame);
-  }
-}
-
-void WebViewGuestDelegate::DidAttach(int guest_proxy_routing_id) {
   api_web_contents_->Emit("did-attach");
+}
+
+void WebViewGuestDelegate::DidDetach() {
+  ResetZoomController();
 }
 
 content::WebContents* WebViewGuestDelegate::GetOwnerWebContents() const {
   return embedder_web_contents_;
 }
 
-void WebViewGuestDelegate::GuestSizeChanged(const gfx::Size& new_size) {
-  if (!auto_size_enabled_)
-    return;
-  GuestSizeChangedDueToAutoSize(guest_size_, new_size);
-  guest_size_ = new_size;
-}
-
-void WebViewGuestDelegate::SetGuestHost(content::GuestHost* guest_host) {
-  guest_host_ = guest_host;
-}
-
-void WebViewGuestDelegate::WillAttach(
-    content::WebContents* embedder_web_contents,
-    int element_instance_id,
-    bool is_full_page_plugin,
-    const base::Closure& completion_callback) {
-  embedder_web_contents_ = embedder_web_contents;
-  is_full_page_plugin_ = is_full_page_plugin;
-  completion_callback.Run();
-}
-
-void WebViewGuestDelegate::GuestSizeChangedDueToAutoSize(
-    const gfx::Size& old_size, const gfx::Size& new_size) {
-  api_web_contents_->Emit("size-changed",
-                          old_size.width(), old_size.height(),
-                          new_size.width(), new_size.height());
-}
-
-gfx::Size WebViewGuestDelegate::GetDefaultSize() const {
-  if (is_full_page_plugin_) {
-    // Full page plugins default to the size of the owner's viewport.
-    return embedder_web_contents_->GetRenderWidgetHostView()
-                                 ->GetVisibleViewportSize();
-  } else {
-    return gfx::Size(kDefaultWidth, kDefaultHeight);
+void WebViewGuestDelegate::OnZoomLevelChanged(
+    content::WebContents* web_contents,
+    double level,
+    bool is_temporary) {
+  if (web_contents == GetOwnerWebContents()) {
+    if (is_temporary) {
+      api_web_contents_->GetZoomController()->SetTemporaryZoomLevel(level);
+    } else {
+      api_web_contents_->GetZoomController()->SetZoomLevel(level);
+    }
+    // Change the default zoom factor to match the embedders' new zoom level.
+    double zoom_factor = content::ZoomLevelToZoomFactor(level);
+    api_web_contents_->GetZoomController()->SetDefaultZoomFactor(zoom_factor);
   }
+}
+
+void WebViewGuestDelegate::OnZoomControllerWebContentsDestroyed() {
+  ResetZoomController();
+}
+
+void WebViewGuestDelegate::ResetZoomController() {
+  if (embedder_zoom_controller_) {
+    embedder_zoom_controller_->RemoveObserver(this);
+    embedder_zoom_controller_ = nullptr;
+  }
+}
+
+content::RenderWidgetHost* WebViewGuestDelegate::GetOwnerRenderWidgetHost() {
+  return embedder_web_contents_->GetRenderViewHost()->GetWidget();
+}
+
+content::SiteInstance* WebViewGuestDelegate::GetOwnerSiteInstance() {
+  return embedder_web_contents_->GetSiteInstance();
+}
+
+content::WebContents* WebViewGuestDelegate::CreateNewGuestWindow(
+    const content::WebContents::CreateParams& create_params) {
+  // Code below mirrors what content::WebContentsImpl::CreateNewWindow
+  // does for non-guest sources
+  content::WebContents::CreateParams guest_params(create_params);
+  guest_params.initial_size =
+      embedder_web_contents_->GetContainerBounds().size();
+  guest_params.context = embedder_web_contents_->GetNativeView();
+  std::unique_ptr<content::WebContents> guest_contents =
+      content::WebContents::Create(guest_params);
+  content::RenderWidgetHost* render_widget_host =
+      guest_contents->GetRenderViewHost()->GetWidget();
+  auto* guest_contents_impl =
+      static_cast<content::WebContentsImpl*>(guest_contents.release());
+  guest_contents_impl->GetView()->CreateViewForWidget(render_widget_host,
+                                                      false);
+
+  return guest_contents_impl;
 }
 
 }  // namespace atom

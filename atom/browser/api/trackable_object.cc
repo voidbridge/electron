@@ -4,6 +4,8 @@
 
 #include "atom/browser/api/trackable_object.h"
 
+#include <memory>
+
 #include "atom/browser/atom_browser_main_parts.h"
 #include "base/bind.h"
 #include "base/supports_user_data.h"
@@ -28,17 +30,16 @@ class IDUserData : public base::SupportsUserData::Data {
 
 }  // namespace
 
-TrackableObjectBase::TrackableObjectBase()
-    : weak_map_id_(0), weak_factory_(this) {
-  cleanup_ = RegisterDestructionCallback(GetDestroyClosure());
+TrackableObjectBase::TrackableObjectBase() : weak_factory_(this) {
+  atom::AtomBrowserMainParts::Get()->RegisterDestructionCallback(
+      GetDestroyClosure());
 }
 
-TrackableObjectBase::~TrackableObjectBase() {
-  cleanup_.Run();
-}
+TrackableObjectBase::~TrackableObjectBase() {}
 
-base::Closure TrackableObjectBase::GetDestroyClosure() {
-  return base::Bind(&TrackableObjectBase::Destroy, weak_factory_.GetWeakPtr());
+base::OnceClosure TrackableObjectBase::GetDestroyClosure() {
+  return base::BindOnce(&TrackableObjectBase::Destroy,
+                        weak_factory_.GetWeakPtr());
 }
 
 void TrackableObjectBase::Destroy() {
@@ -46,22 +47,20 @@ void TrackableObjectBase::Destroy() {
 }
 
 void TrackableObjectBase::AttachAsUserData(base::SupportsUserData* wrapped) {
-  wrapped->SetUserData(kTrackedObjectKey, new IDUserData(weak_map_id_));
+  wrapped->SetUserData(kTrackedObjectKey,
+                       std::make_unique<IDUserData>(weak_map_id_));
 }
 
 // static
-int32_t TrackableObjectBase::GetIDFromWrappedClass(base::SupportsUserData* w) {
-  auto id = static_cast<IDUserData*>(w->GetUserData(kTrackedObjectKey));
-  if (id)
-    return *id;
-  else
-    return 0;
-}
-
-// static
-base::Closure TrackableObjectBase::RegisterDestructionCallback(
-    const base::Closure& c) {
-  return atom::AtomBrowserMainParts::Get()->RegisterDestructionCallback(c);
+int32_t TrackableObjectBase::GetIDFromWrappedClass(
+    base::SupportsUserData* wrapped) {
+  if (wrapped) {
+    auto* id =
+        static_cast<IDUserData*>(wrapped->GetUserData(kTrackedObjectKey));
+    if (id)
+      return *id;
+  }
+  return 0;
 }
 
 }  // namespace mate

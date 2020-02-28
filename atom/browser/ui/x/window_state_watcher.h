@@ -8,14 +8,13 @@
 #include "ui/events/platform/platform_event_observer.h"
 
 #include "atom/browser/native_window_views.h"
-#include "ui/gfx/x/x11_atom_cache.h"
 
 namespace atom {
 
 class WindowStateWatcher : public ui::PlatformEventObserver {
  public:
   explicit WindowStateWatcher(NativeWindowViews* window);
-  virtual ~WindowStateWatcher();
+  ~WindowStateWatcher() override;
 
  protected:
   // ui::PlatformEventObserver:
@@ -28,10 +27,8 @@ class WindowStateWatcher : public ui::PlatformEventObserver {
   NativeWindowViews* window_;
   gfx::AcceleratedWidget widget_;
 
-  ui::X11AtomCache atom_cache_;
-
-  bool was_minimized_;
-  bool was_maximized_;
+  bool was_minimized_ = false;
+  bool was_maximized_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(WindowStateWatcher);
 };

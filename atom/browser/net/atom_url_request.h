@@ -6,8 +6,10 @@
 #ifndef ATOM_BROWSER_NET_ATOM_URL_REQUEST_H_
 #define ATOM_BROWSER_NET_ATOM_URL_REQUEST_H_
 
+#include <memory>
 #include <string>
 #include <vector>
+
 #include "atom/browser/api/atom_api_url_request.h"
 #include "atom/browser/atom_browser_context.h"
 #include "base/memory/ref_counted.h"
@@ -30,23 +32,29 @@ class AtomURLRequest : public base::RefCountedThreadSafe<AtomURLRequest>,
       AtomBrowserContext* browser_context,
       const std::string& method,
       const std::string& url,
+      const std::string& redirect_policy,
       api::URLRequest* delegate);
   void Terminate();
 
   bool Write(scoped_refptr<const net::IOBufferWithSize> buffer, bool is_last);
   void SetChunkedUpload(bool is_chunked_upload);
   void Cancel();
+  void FollowRedirect();
   void SetExtraHeader(const std::string& name, const std::string& value) const;
   void RemoveExtraHeader(const std::string& name) const;
   void PassLoginInformation(const base::string16& username,
                             const base::string16& password) const;
   void SetLoadFlags(int flags) const;
+  void GetUploadProgress(mate::Dictionary* progress) const;
 
  protected:
   // Overrides of net::URLRequest::Delegate
+  void OnReceivedRedirect(net::URLRequest* request,
+                          const net::RedirectInfo& info,
+                          bool* defer_redirect) override;
   void OnAuthRequired(net::URLRequest* request,
-                      net::AuthChallengeInfo* auth_info) override;
-  void OnResponseStarted(net::URLRequest* request) override;
+                      const net::AuthChallengeInfo& auth_info) override;
+  void OnResponseStarted(net::URLRequest* request, int net_error) override;
   void OnReadCompleted(net::URLRequest* request, int bytes_read) override;
 
   // Overrides of net::URLRequestContextGetterObserver
@@ -60,11 +68,13 @@ class AtomURLRequest : public base::RefCountedThreadSafe<AtomURLRequest>,
 
   void DoInitialize(scoped_refptr<net::URLRequestContextGetter>,
                     const std::string& method,
-                    const std::string& url);
+                    const std::string& url,
+                    const std::string& redirect_policy);
   void DoTerminate();
   void DoWriteBuffer(scoped_refptr<const net::IOBufferWithSize> buffer,
                      bool is_last);
   void DoCancel();
+  void DoFollowRedirect();
   void DoSetExtraHeader(const std::string& name,
                         const std::string& value) const;
   void DoRemoveExtraHeader(const std::string& name) const;
@@ -77,8 +87,13 @@ class AtomURLRequest : public base::RefCountedThreadSafe<AtomURLRequest>,
   void ReadResponse();
   bool CopyAndPostBuffer(int bytes_read);
 
+  void InformDelegateReceivedRedirect(
+      int status_code,
+      const std::string& method,
+      const GURL& url,
+      scoped_refptr<net::HttpResponseHeaders> response_headers) const;
   void InformDelegateAuthenticationRequired(
-      scoped_refptr<net::AuthChallengeInfo> auth_info) const;
+      const net::AuthChallengeInfo& auth_info) const;
   void InformDelegateResponseStarted(
       scoped_refptr<net::HttpResponseHeaders>) const;
   void InformDelegateResponseData(
@@ -91,7 +106,8 @@ class AtomURLRequest : public base::RefCountedThreadSafe<AtomURLRequest>,
   std::unique_ptr<net::URLRequest> request_;
   scoped_refptr<net::URLRequestContextGetter> request_context_getter_;
 
-  bool is_chunked_upload_;
+  bool is_chunked_upload_ = false;
+  std::string redirect_policy_;
   std::unique_ptr<net::ChunkedUploadDataStream> chunked_stream_;
   std::unique_ptr<net::ChunkedUploadDataStream::Writer> chunked_stream_writer_;
   std::vector<std::unique_ptr<net::UploadElementReader>>

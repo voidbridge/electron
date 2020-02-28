@@ -1,5 +1,20 @@
 # Electron FAQ
 
+## Why am I having trouble installing Electron?
+
+When running `npm install electron`, some users occasionally encounter
+installation errors.
+
+In almost all cases, these errors are the result of network problems and not
+actual issues with the `electron` npm package. Errors like `ELIFECYCLE`,
+`EAI_AGAIN`, `ECONNRESET`, and `ETIMEDOUT` are all indications of such
+network problems. The best resolution is to try switching networks, or
+wait a bit and try installing again.
+
+You can also attempt to download Electron directly from
+[electron/electron/releases](https://github.com/electron/electron/releases)
+if installing via `npm` is failing.
+
 ## When will Electron upgrade to latest Chrome?
 
 The Chrome version of Electron is usually bumped within one or two weeks after
@@ -63,7 +78,7 @@ If you want a quick fix, you can make the variables global by changing your
 code from this:
 
 ```javascript
-const {app, Tray} = require('electron')
+const { app, Tray } = require('electron')
 app.on('ready', () => {
   const tray = new Tray('/path/to/icon.png')
   tray.setTitle('hello world')
@@ -73,7 +88,7 @@ app.on('ready', () => {
 to this:
 
 ```javascript
-const {app, Tray} = require('electron')
+const { app, Tray } = require('electron')
 let tray = null
 app.on('ready', () => {
   tray = new Tray('/path/to/icon.png')
@@ -91,7 +106,7 @@ To solve this, you can turn off node integration in Electron:
 
 ```javascript
 // In the main process.
-const {BrowserWindow} = require('electron')
+const { BrowserWindow } = require('electron')
 let win = new BrowserWindow({
   webPreferences: {
     nodeIntegration: false
@@ -119,7 +134,7 @@ delete window.module;
 
 When using Electron's built-in module you might encounter an error like this:
 
-```
+```sh
 > require('electron').webFrame.setZoomFactor(1.0)
 Uncaught TypeError: Cannot read property 'setZoomLevel' of undefined
 ```
@@ -136,19 +151,19 @@ console.log(require.resolve('electron'))
 
 and then check if it is in the following form:
 
-```
+```sh
 "/path/to/Electron.app/Contents/Resources/atom.asar/renderer/api/lib/exports/electron.js"
 ```
 
 If it is something like `node_modules/electron/index.js`, then you have to
 either remove the npm `electron` module, or rename it.
 
-```bash
+```sh
 npm uninstall electron
 npm uninstall -g electron
 ```
 
-However if your are using the built-in module but still getting this error, it
+However if you are using the built-in module but still getting this error, it
 is very likely you are using the module in the wrong process. For example
 `electron.app` can only be used in the main process, while `electron.webFrame`
 is only available in renderer processes.

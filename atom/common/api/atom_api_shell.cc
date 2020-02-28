@@ -10,6 +10,7 @@
 #include "atom/common/native_mate_converters/string16_converter.h"
 #include "atom/common/node_includes.h"
 #include "atom/common/platform_util.h"
+#include "atom/common/promise_util.h"
 #include "native_mate/dictionary.h"
 
 #if defined(OS_WIN)
@@ -18,12 +19,13 @@
 
 namespace mate {
 
-template<>
+template <>
 struct Converter<base::win::ShortcutOperation> {
-  static bool FromV8(v8::Isolate* isolate, v8::Handle<v8::Value> val,
+  static bool FromV8(v8::Isolate* isolate,
+                     v8::Handle<v8::Value> val,
                      base::win::ShortcutOperation* out) {
     std::string operation;
-    if (!ConvertFromV8(isolate, val, & operation))
+    if (!ConvertFromV8(isolate, val, &operation))
       return false;
     if (operation.empty() || operation == "create")
       *out = base::win::SHORTCUT_CREATE_ALWAYS;
@@ -42,42 +44,56 @@ struct Converter<base::win::ShortcutOperation> {
 
 namespace {
 
-void OnOpenExternalFinished(
-    v8::Isolate* isolate,
-    const base::Callback<void(v8::Local<v8::Value>)>& callback,
-    const std::string& error) {
+void OnOpenExternalFinished(atom::util::Promise promise,
+                            const std::string& error) {
   if (error.empty())
-    callback.Run(v8::Null(isolate));
+    promise.Resolve();
   else
-    callback.Run(v8::String::NewFromUtf8(isolate, error.c_str()));
+    promise.RejectWithErrorMessage(error.c_str());
 }
 
-bool OpenExternal(
+bool OpenExternalSync(
 #if defined(OS_WIN)
     const base::string16& url,
 #else
     const GURL& url,
 #endif
     mate::Arguments* args) {
-  bool activate = true;
+  platform_util::OpenExternalOptions options;
   if (args->Length() >= 2) {
-    mate::Dictionary options;
-    if (args->GetNext(&options)) {
-      options.Get("activate", &activate);
+    mate::Dictionary obj;
+    if (args->GetNext(&obj)) {
+      obj.Get("activate", &options.activate);
+      obj.Get("workingDirectory", &options.working_dir);
     }
   }
 
-  if (args->Length() >= 3) {
-    base::Callback<void(v8::Local<v8::Value>)> callback;
-    if (args->GetNext(&callback)) {
-      platform_util::OpenExternal(
-          url, activate,
-          base::Bind(&OnOpenExternalFinished, args->isolate(), callback));
-      return true;
+  return platform_util::OpenExternal(url, options);
+}
+
+v8::Local<v8::Promise> OpenExternal(
+#if defined(OS_WIN)
+    const base::string16& url,
+#else
+    const GURL& url,
+#endif
+    mate::Arguments* args) {
+  atom::util::Promise promise(args->isolate());
+
+  platform_util::OpenExternalOptions options;
+  if (args->Length() >= 2) {
+    mate::Dictionary obj;
+    if (args->GetNext(&obj)) {
+      obj.Get("activate", &options.activate);
+      obj.Get("workingDirectory", &options.working_dir);
     }
   }
 
-  return platform_util::OpenExternal(url, activate);
+  v8::Local<v8::Promise> handle = promise.GetHandle();
+  platform_util::OpenExternal(
+      url, options,
+      base::BindOnce(&OnOpenExternalFinished, std::move(promise)));
+  return handle;
 }
 
 #if defined(OS_WIN)
@@ -109,8 +125,8 @@ bool WriteShortcutLink(const base::FilePath& shortcut_path,
     properties.set_app_id(str);
 
   base::win::ScopedCOMInitializer com_initializer;
-  return base::win::CreateOrUpdateShortcutLink(
-      shortcut_path, properties, operation);
+  return base::win::CreateOrUpdateShortcutLink(shortcut_path, properties,
+                                               operation);
 }
 
 v8::Local<v8::Value> ReadShortcutLink(mate::Arguments* args,
@@ -135,11 +151,14 @@ v8::Local<v8::Value> ReadShortcutLink(mate::Arguments* args,
 }
 #endif
 
-void Initialize(v8::Local<v8::Object> exports, v8::Local<v8::Value> unused,
-                v8::Local<v8::Context> context, void* priv) {
+void Initialize(v8::Local<v8::Object> exports,
+                v8::Local<v8::Value> unused,
+                v8::Local<v8::Context> context,
+                void* priv) {
   mate::Dictionary dict(context->GetIsolate(), exports);
   dict.SetMethod("showItemInFolder", &platform_util::ShowItemInFolder);
   dict.SetMethod("openItem", &platform_util::OpenItem);
+  dict.SetMethod("openExternalSync", &OpenExternalSync);
   dict.SetMethod("openExternal", &OpenExternal);
   dict.SetMethod("moveItemToTrash", &platform_util::MoveItemToTrash);
   dict.SetMethod("beep", &platform_util::Beep);
@@ -151,4 +170,4 @@ void Initialize(v8::Local<v8::Object> exports, v8::Local<v8::Value> unused,
 
 }  // namespace
 
-NODE_MODULE_CONTEXT_AWARE_BUILTIN(atom_common_shell, Initialize)
+NODE_LINKED_MODULE_CONTEXT_AWARE(atom_common_shell, Initialize)

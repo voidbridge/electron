@@ -14,13 +14,15 @@
 #include "atom/browser/browser.h"
 #include "atom/browser/native_window_views.h"
 #include "atom/browser/unresponsive_suppressor.h"
-#include "base/callback.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread.h"
 #include "base/win/scoped_gdi_object.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "ui/gfx/icon_util.h"
+#include "ui/gfx/image/image_skia.h"
 
 namespace atom {
 
@@ -38,18 +40,18 @@ struct CommonButtonID {
 CommonButtonID GetCommonID(const base::string16& button) {
   base::string16 lower = base::ToLowerASCII(button);
   if (lower == L"ok")
-    return { TDCBF_OK_BUTTON, IDOK };
+    return {TDCBF_OK_BUTTON, IDOK};
   else if (lower == L"yes")
-    return { TDCBF_YES_BUTTON, IDYES };
+    return {TDCBF_YES_BUTTON, IDYES};
   else if (lower == L"no")
-    return { TDCBF_NO_BUTTON, IDNO };
+    return {TDCBF_NO_BUTTON, IDNO};
   else if (lower == L"cancel")
-    return { TDCBF_CANCEL_BUTTON, IDCANCEL };
+    return {TDCBF_CANCEL_BUTTON, IDCANCEL};
   else if (lower == L"retry")
-    return { TDCBF_RETRY_BUTTON, IDRETRY };
+    return {TDCBF_RETRY_BUTTON, IDRETRY};
   else if (lower == L"close")
-    return { TDCBF_CLOSE_BUTTON, IDCLOSE };
-  return { -1, -1 };
+    return {TDCBF_CLOSE_BUTTON, IDCLOSE};
+  return {-1, -1};
 }
 
 // Determine whether the buttons are common buttons, if so map common ID
@@ -72,7 +74,7 @@ void MapToCommonID(const std::vector<base::string16>& buttons,
   }
 }
 
-int ShowMessageBoxUTF16(HWND parent,
+int ShowTaskDialogUTF16(NativeWindow* parent,
                         MessageBoxType type,
                         const std::vector<base::string16>& buttons,
                         int default_id,
@@ -81,16 +83,22 @@ int ShowMessageBoxUTF16(HWND parent,
                         const base::string16& title,
                         const base::string16& message,
                         const base::string16& detail,
+                        const base::string16& checkbox_label,
+                        bool* checkbox_checked,
                         const gfx::ImageSkia& icon) {
   TASKDIALOG_FLAGS flags =
-      TDF_SIZE_TO_CONTENT |  // Show all content.
+      TDF_SIZE_TO_CONTENT |           // Show all content.
       TDF_ALLOW_DIALOG_CANCELLATION;  // Allow canceling the dialog.
 
-  TASKDIALOGCONFIG config = { 0 };
-  config.cbSize     = sizeof(config);
-  config.hwndParent = parent;
-  config.hInstance  = GetModuleHandle(NULL);
-  config.dwFlags    = flags;
+  TASKDIALOGCONFIG config = {0};
+  config.cbSize = sizeof(config);
+  config.hInstance = GetModuleHandle(NULL);
+  config.dwFlags = flags;
+
+  if (parent) {
+    config.hwndParent =
+        static_cast<atom::NativeWindowViews*>(parent)->GetAcceleratedWidget();
+  }
 
   if (default_id > 0)
     config.nDefaultButton = kIDStart + default_id;
@@ -121,6 +129,8 @@ int ShowMessageBoxUTF16(HWND parent,
       case MESSAGE_BOX_TYPE_ERROR:
         config.pszMainIcon = TD_ERROR_ICON;
         break;
+      case MESSAGE_BOX_TYPE_NONE:
+        break;
     }
   }
 
@@ -130,6 +140,14 @@ int ShowMessageBoxUTF16(HWND parent,
   } else {
     config.pszMainInstruction = message.c_str();
     config.pszContent = detail.c_str();
+  }
+
+  if (!checkbox_label.empty()) {
+    config.pszVerificationText = checkbox_label.c_str();
+
+    if (checkbox_checked && *checkbox_checked) {
+      config.dwFlags |= TDF_VERIFICATION_FLAG_CHECKED;
+    }
   }
 
   // Iterate through the buttons, put common buttons in dwCommonButtons
@@ -151,13 +169,41 @@ int ShowMessageBoxUTF16(HWND parent,
   }
 
   int id = 0;
-  TaskDialogIndirect(&config, &id, NULL, NULL);
+  BOOL verificationFlagChecked = FALSE;
+  TaskDialogIndirect(&config, &id, nullptr, &verificationFlagChecked);
+  if (checkbox_checked) {
+    *checkbox_checked = verificationFlagChecked;
+  }
+
   if (id_map.find(id) != id_map.end())  // common button.
     return id_map[id];
   else if (id >= kIDStart)  // custom button.
     return id - kIDStart;
   else
     return cancel_id;
+}
+
+int ShowTaskDialogUTF8(NativeWindow* parent,
+                       MessageBoxType type,
+                       const std::vector<std::string>& buttons,
+                       int default_id,
+                       int cancel_id,
+                       int options,
+                       const std::string& title,
+                       const std::string& message,
+                       const std::string& detail,
+                       const std::string& checkbox_label,
+                       bool* checkbox_checked,
+                       const gfx::ImageSkia& icon) {
+  std::vector<base::string16> utf16_buttons;
+  for (const auto& button : buttons)
+    utf16_buttons.push_back(base::UTF8ToUTF16(button));
+
+  return ShowTaskDialogUTF16(
+      parent, type, utf16_buttons, default_id, cancel_id, options,
+      base::UTF8ToUTF16(title), base::UTF8ToUTF16(message),
+      base::UTF8ToUTF16(detail), base::UTF8ToUTF16(checkbox_label),
+      checkbox_checked, icon);
 }
 
 void RunMessageBoxInNewThread(base::Thread* thread,
@@ -170,47 +216,35 @@ void RunMessageBoxInNewThread(base::Thread* thread,
                               const std::string& title,
                               const std::string& message,
                               const std::string& detail,
+                              const std::string& checkbox_label,
+                              bool checkbox_checked,
                               const gfx::ImageSkia& icon,
-                              const MessageBoxCallback& callback) {
-  int result = ShowMessageBox(parent, type, buttons, default_id,
-                              cancel_id, options, title, message, detail, icon);
-  content::BrowserThread::PostTask(
-      content::BrowserThread::UI, FROM_HERE, base::Bind(callback, result));
-  content::BrowserThread::DeleteSoon(
-      content::BrowserThread::UI, FROM_HERE, thread);
+                              MessageBoxCallback callback) {
+  int result = ShowTaskDialogUTF8(parent, type, buttons, default_id, cancel_id,
+                                  options, title, message, detail,
+                                  checkbox_label, &checkbox_checked, icon);
+  base::PostTaskWithTraits(
+      FROM_HERE, {content::BrowserThread::UI},
+      base::BindOnce(std::move(callback), result, checkbox_checked));
+  content::BrowserThread::DeleteSoon(content::BrowserThread::UI, FROM_HERE,
+                                     thread);
 }
 
 }  // namespace
 
-int ShowMessageBox(NativeWindow* parent,
-                   MessageBoxType type,
-                   const std::vector<std::string>& buttons,
-                   int default_id,
-                   int cancel_id,
-                   int options,
-                   const std::string& title,
-                   const std::string& message,
-                   const std::string& detail,
-                   const gfx::ImageSkia& icon) {
-  std::vector<base::string16> utf16_buttons;
-  for (const auto& button : buttons)
-    utf16_buttons.push_back(base::UTF8ToUTF16(button));
-
-  HWND hwnd_parent = parent ?
-      static_cast<atom::NativeWindowViews*>(parent)->GetAcceleratedWidget() :
-      NULL;
-
+int ShowMessageBoxSync(NativeWindow* parent,
+                       MessageBoxType type,
+                       const std::vector<std::string>& buttons,
+                       int default_id,
+                       int cancel_id,
+                       int options,
+                       const std::string& title,
+                       const std::string& message,
+                       const std::string& detail,
+                       const gfx::ImageSkia& icon) {
   atom::UnresponsiveSuppressor suppressor;
-  return ShowMessageBoxUTF16(hwnd_parent,
-                             type,
-                             utf16_buttons,
-                             default_id,
-                             cancel_id,
-                             options,
-                             base::UTF8ToUTF16(title),
-                             base::UTF8ToUTF16(message),
-                             base::UTF8ToUTF16(detail),
-                             icon);
+  return ShowTaskDialogUTF8(parent, type, buttons, default_id, cancel_id,
+                            options, title, message, detail, "", nullptr, icon);
 }
 
 void ShowMessageBox(NativeWindow* parent,
@@ -222,28 +256,31 @@ void ShowMessageBox(NativeWindow* parent,
                     const std::string& title,
                     const std::string& message,
                     const std::string& detail,
+                    const std::string& checkbox_label,
+                    bool checkbox_checked,
                     const gfx::ImageSkia& icon,
-                    const MessageBoxCallback& callback) {
-  std::unique_ptr<base::Thread> thread(
-      new base::Thread(ATOM_PRODUCT_NAME "MessageBoxThread"));
+                    MessageBoxCallback callback) {
+  auto thread =
+      std::make_unique<base::Thread>(ATOM_PRODUCT_NAME "MessageBoxThread");
   thread->init_com_with_mta(false);
   if (!thread->Start()) {
-    callback.Run(cancel_id);
+    std::move(callback).Run(cancel_id, checkbox_checked);
     return;
   }
 
   base::Thread* unretained = thread.release();
-  unretained->message_loop()->PostTask(
+  unretained->task_runner()->PostTask(
       FROM_HERE,
-      base::Bind(&RunMessageBoxInNewThread, base::Unretained(unretained),
-                 parent, type, buttons, default_id, cancel_id, options, title,
-                 message, detail, icon, callback));
+      base::BindOnce(&RunMessageBoxInNewThread, base::Unretained(unretained),
+                     parent, type, buttons, default_id, cancel_id, options,
+                     title, message, detail, checkbox_label, checkbox_checked,
+                     icon, std::move(callback)));
 }
 
 void ShowErrorBox(const base::string16& title, const base::string16& content) {
   atom::UnresponsiveSuppressor suppressor;
-  ShowMessageBoxUTF16(NULL, MESSAGE_BOX_TYPE_ERROR, {}, -1, 0, 0, L"Error",
-                      title, content, gfx::ImageSkia());
+  ShowTaskDialogUTF16(nullptr, MESSAGE_BOX_TYPE_ERROR, {}, -1, 0, 0, L"Error",
+                      title, content, L"", nullptr, gfx::ImageSkia());
 }
 
 }  // namespace atom

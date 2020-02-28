@@ -8,6 +8,7 @@
 
 #import <Cocoa/Cocoa.h>
 
+#include "base/callback.h"
 #include "base/mac/scoped_nsobject.h"
 #include "base/strings/string16.h"
 
@@ -21,12 +22,13 @@ class AtomMenuModel;
 // allow for hierarchical menus). The tag is the index into that model for
 // that particular item. It is important that the model outlives this object
 // as it only maintains weak references.
-@interface AtomMenuController : NSObject<NSMenuDelegate> {
+@interface AtomMenuController : NSObject <NSMenuDelegate> {
  @protected
   atom::AtomMenuModel* model_;  // weak
   base::scoped_nsobject<NSMenu> menu_;
   BOOL isMenuOpen_;
   BOOL useDefaultAccelerator_;
+  base::OnceClosure closeCallback;
 }
 
 @property(nonatomic, assign) atom::AtomMenuModel* model;
@@ -34,6 +36,8 @@ class AtomMenuModel;
 // Builds a NSMenu from the pre-built model (must not be nil). Changes made
 // to the contents of the model after calling this will not be noticed.
 - (id)initWithModel:(atom::AtomMenuModel*)model useDefaultAccelerator:(BOOL)use;
+
+- (void)setCloseCallback:(base::OnceClosure)callback;
 
 // Populate current NSMenu with |model|.
 - (void)populateWithModel:(atom::AtomMenuModel*)model;

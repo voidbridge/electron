@@ -5,6 +5,7 @@
 #ifndef ATOM_BROWSER_WEB_CONTENTS_PREFERENCES_H_
 #define ATOM_BROWSER_WEB_CONTENTS_PREFERENCES_H_
 
+#include <string>
 #include <vector>
 
 #include "base/values.h"
@@ -28,37 +29,66 @@ namespace atom {
 class WebContentsPreferences
     : public content::WebContentsUserData<WebContentsPreferences> {
  public:
-  // Get WebContents according to process ID.
-  // FIXME(zcbenz): This method does not belong here.
-  static content::WebContents* GetWebContentsFromProcessID(int process_id);
-
-  // Append command paramters according to |web_contents|'s preferences.
-  static void AppendExtraCommandLineSwitches(
-      content::WebContents* web_contents, base::CommandLine* command_line);
-
-  static bool IsSandboxed(content::WebContents* web_contents);
-
-  // Modify the WebPreferences according to |web_contents|'s preferences.
-  static void OverrideWebkitPrefs(
-      content::WebContents* web_contents, content::WebPreferences* prefs);
+  // Get self from WebContents.
+  static WebContentsPreferences* From(content::WebContents* web_contents);
 
   WebContentsPreferences(content::WebContents* web_contents,
                          const mate::Dictionary& web_preferences);
   ~WebContentsPreferences() override;
 
-  // $.extend(|web_preferences_|, |new_web_preferences|).
+  // Set WebPreferences defaults onto the JS object.
+  void SetDefaults();
+
+  // A simple way to know whether a Boolean property is enabled.
+  bool IsEnabled(const base::StringPiece& name,
+                 bool default_value = false) const;
+
+  // $.extend(|web_preferences|, |new_web_preferences|).
   void Merge(const base::DictionaryValue& new_web_preferences);
 
+  // Append command paramters according to preferences.
+  void AppendCommandLineSwitches(base::CommandLine* command_line);
+
+  // Modify the WebPreferences according to preferences.
+  void OverrideWebkitPrefs(content::WebPreferences* prefs);
+
+  // Clear the current WebPreferences.
+  void Clear();
+
+  // Return true if the particular preference value exists.
+  bool GetPreference(const base::StringPiece& name, std::string* value) const;
+
+  // Whether to enable the remote module
+  bool IsRemoteModuleEnabled() const;
+
+  // Returns the preload script path.
+  bool GetPreloadPath(base::FilePath::StringType* path) const;
+
   // Returns the web preferences.
-  base::DictionaryValue* web_preferences() { return &web_preferences_; }
+  base::Value* preference() { return &preference_; }
+  base::Value* last_preference() { return &last_preference_; }
 
  private:
   friend class content::WebContentsUserData<WebContentsPreferences>;
+  friend class AtomBrowserClient;
+
+  // Get WebContents according to process ID.
+  static content::WebContents* GetWebContentsFromProcessID(int process_id);
+
+  // Set preference value to given bool if user did not provide value
+  bool SetDefaultBoolIfUndefined(const base::StringPiece& key, bool val);
+
+  // Set preference value to given bool
+  void SetBool(const base::StringPiece& key, bool value);
 
   static std::vector<WebContentsPreferences*> instances_;
 
   content::WebContents* web_contents_;
-  base::DictionaryValue web_preferences_;
+
+  base::Value preference_ = base::Value(base::Value::Type::DICTIONARY);
+  base::Value last_preference_ = base::Value(base::Value::Type::DICTIONARY);
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(WebContentsPreferences);
 };

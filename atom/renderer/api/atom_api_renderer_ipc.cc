@@ -2,78 +2,177 @@
 // Use of this source code is governed by the MIT license that can be
 // found in the LICENSE file.
 
-#include "atom/renderer/api/atom_api_renderer_ipc.h"
+#include <string>
+
 #include "atom/common/api/api_messages.h"
-#include "atom/common/native_mate_converters/string16_converter.h"
 #include "atom/common/native_mate_converters/value_converter.h"
+#include "atom/common/node_bindings.h"
 #include "atom/common/node_includes.h"
-#include "content/public/renderer/render_view.h"
+#include "base/task/post_task.h"
+#include "base/values.h"
+#include "content/public/renderer/render_frame.h"
+#include "electron/atom/common/api/api.mojom.h"
+#include "native_mate/arguments.h"
 #include "native_mate/dictionary.h"
-#include "third_party/WebKit/public/web/WebLocalFrame.h"
-#include "third_party/WebKit/public/web/WebView.h"
+#include "native_mate/handle.h"
+#include "native_mate/object_template_builder.h"
+#include "native_mate/wrappable.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
+#include "third_party/blink/public/web/web_local_frame.h"
 
-using content::RenderView;
 using blink::WebLocalFrame;
-using blink::WebView;
+using content::RenderFrame;
 
-namespace atom {
+namespace {
 
-namespace api {
-
-RenderView* GetCurrentRenderView() {
-  WebLocalFrame* frame = WebLocalFrame::frameForCurrentContext();
+RenderFrame* GetCurrentRenderFrame() {
+  WebLocalFrame* frame = WebLocalFrame::FrameForCurrentContext();
   if (!frame)
     return nullptr;
 
-  WebView* view = frame->view();
-  if (!view)
-    return nullptr;  // can happen during closing.
-
-  return RenderView::FromWebView(view);
+  return RenderFrame::FromWebFrame(frame);
 }
 
-void Send(mate::Arguments* args,
-          const base::string16& channel,
-          const base::ListValue& arguments) {
-  RenderView* render_view = GetCurrentRenderView();
-  if (render_view == nullptr)
-    return;
+class IPCRenderer : public mate::Wrappable<IPCRenderer> {
+ public:
+  explicit IPCRenderer(v8::Isolate* isolate) {
+    Init(isolate);
+    RenderFrame* render_frame = GetCurrentRenderFrame();
+    DCHECK(render_frame);
+    render_frame->GetRemoteInterfaces()->GetInterface(
+        mojo::MakeRequest(&electron_browser_ptr_));
+  }
+  static void BuildPrototype(v8::Isolate* isolate,
+                             v8::Local<v8::FunctionTemplate> prototype) {
+    prototype->SetClassName(mate::StringToV8(isolate, "IPCRenderer"));
+    mate::ObjectTemplateBuilder(isolate, prototype->PrototypeTemplate())
+        .SetMethod("send", &IPCRenderer::Send)
+        .SetMethod("sendSync", &IPCRenderer::SendSync)
+        .SetMethod("sendTo", &IPCRenderer::SendTo)
+        .SetMethod("sendToHost", &IPCRenderer::SendToHost);
+  }
+  static mate::Handle<IPCRenderer> Create(v8::Isolate* isolate) {
+    return mate::CreateHandle(isolate, new IPCRenderer(isolate));
+  }
 
-  bool success = render_view->Send(new AtomViewHostMsg_Message(
-      render_view->GetRoutingID(), channel, arguments));
+  void Send(mate::Arguments* args,
+            bool internal,
+            const std::string& channel,
+            const base::ListValue& arguments) {
+    electron_browser_ptr_->Message(internal, channel, arguments.Clone());
+  }
 
-  if (!success)
-    args->ThrowError("Unable to send AtomViewHostMsg_Message");
-}
+  void SendTo(mate::Arguments* args,
+              bool internal,
+              bool send_to_all,
+              int32_t web_contents_id,
+              const std::string& channel,
+              const base::ListValue& arguments) {
+    electron_browser_ptr_->MessageTo(internal, send_to_all, web_contents_id,
+                                     channel, arguments.Clone());
+  }
 
-base::string16 SendSync(mate::Arguments* args,
-                        const base::string16& channel,
-                        const base::ListValue& arguments) {
-  base::string16 json;
+  void SendToHost(mate::Arguments* args,
+                  const std::string& channel,
+                  const base::ListValue& arguments) {
+    electron_browser_ptr_->MessageHost(channel, arguments.Clone());
+  }
 
-  RenderView* render_view = GetCurrentRenderView();
-  if (render_view == nullptr)
-    return json;
+  base::Value SendSync(mate::Arguments* args,
+                       bool internal,
+                       const std::string& channel,
+                       const base::ListValue& arguments) {
+    std::string error;
+    base::Value result;
 
-  IPC::SyncMessage* message = new AtomViewHostMsg_Message_Sync(
-      render_view->GetRoutingID(), channel, arguments, &json);
-  bool success = render_view->Send(message);
+    // A task is posted to a separate thread to execute the request so that
+    // this thread may block on a waitable event. It is safe to pass raw
+    // pointers to |result| and |event| as this stack frame will survive until
+    // the request is complete.
+    scoped_refptr<base::SingleThreadTaskRunner> task_runner =
+        base::CreateSingleThreadTaskRunnerWithTraits({});
 
-  if (!success)
-    args->ThrowError("Unable to send AtomViewHostMsg_Message_Sync");
+    base::WaitableEvent response_received_event;
 
-  return json;
-}
+    // We unbind the interface from this thread to pass it over to the worker
+    // thread temporarily. This requires that no callbacks be pending for this
+    // interface.
+    auto interface_info = electron_browser_ptr_.PassInterface();
+    task_runner->PostTask(
+        FROM_HERE,
+        base::BindOnce(&IPCRenderer::SendMessageSyncOnWorkerThread,
+                       base::Unretained(this),
+                       base::Unretained(&interface_info),
+                       base::Unretained(&response_received_event),
+                       base::Unretained(&result), internal, channel,
+                       base::Unretained(&arguments), base::Unretained(&error)));
+    response_received_event.Wait();
+    electron_browser_ptr_.Bind(std::move(interface_info));
+    if (!error.empty()) {
+      args->ThrowError(error);
+    }
+    return result;
+  }
 
-void Initialize(v8::Local<v8::Object> exports, v8::Local<v8::Value> unused,
-                v8::Local<v8::Context> context, void* priv) {
+ private:
+  void SendMessageSyncOnWorkerThread(
+      atom::mojom::ElectronBrowserPtrInfo* interface_info,
+      base::WaitableEvent* event,
+      base::Value* result,
+      bool internal,
+      const std::string& channel,
+      const base::ListValue* arguments,
+      std::string* error) {
+    atom::mojom::ElectronBrowserPtr browser_ptr(std::move(*interface_info));
+    electron_browser_ptr_ = std::move(browser_ptr);
+
+    electron_browser_ptr_.set_connection_error_handler(
+        base::BindOnce(&IPCRenderer::HandleMojoConnectionErrorOnWorkerThread,
+                       base::Unretained(&electron_browser_ptr_),
+                       base::Unretained(interface_info),
+                       base::Unretained(event), base::Unretained(error)));
+    electron_browser_ptr_->MessageSync(
+        internal, channel, arguments->Clone(),
+        base::BindOnce(&IPCRenderer::ReturnSyncResponseToMainThread,
+                       base::Unretained(&electron_browser_ptr_),
+                       base::Unretained(interface_info),
+                       base::Unretained(event), base::Unretained(result)));
+  }
+  static void ReturnSyncResponseToMainThread(
+      atom::mojom::ElectronBrowserPtr* ptr,
+      atom::mojom::ElectronBrowserPtrInfo* interface_info,
+      base::WaitableEvent* event,
+      base::Value* result,
+      base::Value response) {
+    *result = std::move(response);
+    *interface_info = ptr->PassInterface();
+    event->Signal();
+  }
+  // If the other end of the message pipe disconnects, ensure we don't hang the
+  // main thread forever.
+  static void HandleMojoConnectionErrorOnWorkerThread(
+      atom::mojom::ElectronBrowserPtr* ptr,
+      atom::mojom::ElectronBrowserPtrInfo* interface_info,
+      base::WaitableEvent* event,
+      std::string* error) {
+    LOG(INFO) << "Mojo connection interuppted, likely due to the Mojo receiver "
+                 "process crashing.";
+    *error = "IPC connection fatally interrupted.";
+    *interface_info = ptr->PassInterface();
+    event->Signal();
+  }
+
+  atom::mojom::ElectronBrowserPtr electron_browser_ptr_;
+};
+
+void Initialize(v8::Local<v8::Object> exports,
+                v8::Local<v8::Value> unused,
+                v8::Local<v8::Context> context,
+                void* priv) {
   mate::Dictionary dict(context->GetIsolate(), exports);
-  dict.SetMethod("send", &Send);
-  dict.SetMethod("sendSync", &SendSync);
+  dict.Set("ipc", IPCRenderer::Create(context->GetIsolate()));
 }
 
-}  // namespace api
+}  // namespace
 
-}  // namespace atom
-
-NODE_MODULE_CONTEXT_AWARE_BUILTIN(atom_renderer_ipc, atom::api::Initialize)
+NODE_LINKED_MODULE_CONTEXT_AWARE(atom_renderer_ipc, Initialize)

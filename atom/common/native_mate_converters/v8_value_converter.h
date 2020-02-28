@@ -5,16 +5,17 @@
 #ifndef ATOM_COMMON_NATIVE_MATE_CONVERTERS_V8_VALUE_CONVERTER_H_
 #define ATOM_COMMON_NATIVE_MATE_CONVERTERS_V8_VALUE_CONVERTER_H_
 
+#include <memory>
+
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "v8/include/v8.h"
 
 namespace base {
-class BinaryValue;
 class DictionaryValue;
 class ListValue;
 class Value;
-}
+}  // namespace base
 
 namespace atom {
 
@@ -27,8 +28,9 @@ class V8ValueConverter {
   void SetStripNullFromObjects(bool val);
   v8::Local<v8::Value> ToV8Value(const base::Value* value,
                                  v8::Local<v8::Context> context) const;
-  base::Value* FromV8Value(v8::Local<v8::Value> value,
-                           v8::Local<v8::Context> context) const;
+  std::unique_ptr<base::Value> FromV8Value(
+      v8::Local<v8::Value> value,
+      v8::Local<v8::Context> context) const;
 
  private:
   class FromV8ValueState;
@@ -41,32 +43,31 @@ class V8ValueConverter {
   v8::Local<v8::Value> ToV8Object(
       v8::Isolate* isolate,
       const base::DictionaryValue* dictionary) const;
-  v8::Local<v8::Value> ToArrayBuffer(
-      v8::Isolate* isolate,
-      const base::BinaryValue* value) const;
+  v8::Local<v8::Value> ToArrayBuffer(v8::Isolate* isolate,
+                                     const base::Value* value) const;
 
-  base::Value* FromV8ValueImpl(FromV8ValueState* state,
-                               v8::Local<v8::Value> value,
-                               v8::Isolate* isolate) const;
-  base::Value* FromV8Array(v8::Local<v8::Array> array,
-                           FromV8ValueState* state,
-                           v8::Isolate* isolate) const;
-  base::Value* FromNodeBuffer(v8::Local<v8::Value> value,
-                              FromV8ValueState* state,
-                              v8::Isolate* isolate) const;
-  base::Value* FromV8Object(v8::Local<v8::Object> object,
-                            FromV8ValueState* state,
-                            v8::Isolate* isolate) const;
+  std::unique_ptr<base::Value> FromV8ValueImpl(FromV8ValueState* state,
+                                               v8::Local<v8::Value> value,
+                                               v8::Isolate* isolate) const;
+  std::unique_ptr<base::Value> FromV8Array(v8::Local<v8::Array> array,
+                                           FromV8ValueState* state,
+                                           v8::Isolate* isolate) const;
+  std::unique_ptr<base::Value> FromNodeBuffer(v8::Local<v8::Value> value,
+                                              FromV8ValueState* state,
+                                              v8::Isolate* isolate) const;
+  std::unique_ptr<base::Value> FromV8Object(v8::Local<v8::Object> object,
+                                            FromV8ValueState* state,
+                                            v8::Isolate* isolate) const;
 
   // If true, we will convert RegExp JavaScript objects to string.
-  bool reg_exp_allowed_;
+  bool reg_exp_allowed_ = false;
 
   // If true, we will convert Function JavaScript objects to dictionaries.
-  bool function_allowed_;
+  bool function_allowed_ = false;
 
   // If true, undefined and null values are ignored when converting v8 objects
   // into Values.
-  bool strip_null_from_objects_;
+  bool strip_null_from_objects_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(V8ValueConverter);
 };

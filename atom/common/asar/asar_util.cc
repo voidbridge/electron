@@ -12,6 +12,8 @@
 #include "base/files/file_util.h"
 #include "base/lazy_instance.h"
 #include "base/stl_util.h"
+#include "base/threading/thread_local.h"
+#include "base/threading/thread_restrictions.h"
 
 namespace asar {
 
@@ -19,14 +21,28 @@ namespace {
 
 // The global instance of ArchiveMap, will be destroyed on exit.
 typedef std::map<base::FilePath, std::shared_ptr<Archive>> ArchiveMap;
-static base::LazyInstance<ArchiveMap> g_archive_map = LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<base::ThreadLocalPointer<ArchiveMap>>::Leaky
+    g_archive_map_tls = LAZY_INSTANCE_INITIALIZER;
 
 const base::FilePath::CharType kAsarExtension[] = FILE_PATH_LITERAL(".asar");
+
+std::map<base::FilePath, bool> g_is_directory_cache;
+
+bool IsDirectoryCached(const base::FilePath& path) {
+  auto it = g_is_directory_cache.find(path);
+  if (it != g_is_directory_cache.end()) {
+    return it->second;
+  }
+  base::ThreadRestrictions::ScopedAllowIO allow_io;
+  return g_is_directory_cache[path] = base::DirectoryExists(path);
+}
 
 }  // namespace
 
 std::shared_ptr<Archive> GetOrCreateAsarArchive(const base::FilePath& path) {
-  ArchiveMap& archive_map = *g_archive_map.Pointer();
+  if (!g_archive_map_tls.Pointer()->Get())
+    g_archive_map_tls.Pointer()->Set(new ArchiveMap);
+  ArchiveMap& archive_map = *g_archive_map_tls.Pointer()->Get();
   if (!ContainsKey(archive_map, path)) {
     std::shared_ptr<Archive> archive(new Archive(path));
     if (!archive->Init())
@@ -36,13 +52,19 @@ std::shared_ptr<Archive> GetOrCreateAsarArchive(const base::FilePath& path) {
   return archive_map[path];
 }
 
+void ClearArchives() {
+  if (g_archive_map_tls.Pointer()->Get())
+    delete g_archive_map_tls.Pointer()->Get();
+}
+
 bool GetAsarArchivePath(const base::FilePath& full_path,
                         base::FilePath* asar_path,
-                        base::FilePath* relative_path) {
+                        base::FilePath* relative_path,
+                        bool allow_root) {
   base::FilePath iter = full_path;
   while (true) {
     base::FilePath dirname = iter.DirName();
-    if (iter.MatchesExtension(kAsarExtension))
+    if (iter.MatchesExtension(kAsarExtension) && !IsDirectoryCached(iter))
       break;
     else if (iter == dirname)
       return false;
@@ -50,7 +72,8 @@ bool GetAsarArchivePath(const base::FilePath& full_path,
   }
 
   base::FilePath tail;
-  if (!iter.AppendRelativePath(full_path, &tail))
+  if (!((allow_root && iter == full_path) ||
+        iter.AppendRelativePath(full_path, &tail)))
     return false;
 
   *asar_path = iter;
@@ -83,8 +106,9 @@ bool ReadFileToString(const base::FilePath& path, std::string* contents) {
     return false;
 
   contents->resize(info.size);
-  return static_cast<int>(info.size) == src.Read(
-      info.offset, const_cast<char*>(contents->data()), contents->size());
+  return static_cast<int>(info.size) ==
+         src.Read(info.offset, const_cast<char*>(contents->data()),
+                  contents->size());
 }
 
 }  // namespace asar

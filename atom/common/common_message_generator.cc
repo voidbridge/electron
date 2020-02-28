@@ -8,10 +8,8 @@
 
 // Generate constructors.
 #include "ipc/struct_constructor_macros.h"
-#include "atom/common/common_message_generator.h"
 
-// Generate destructors.
-#include "ipc/struct_destructor_macros.h"
+// lint: must come after struct_constructor_macros.
 #include "atom/common/common_message_generator.h"
 
 // Generate param traits write methods.
@@ -31,4 +29,3 @@ namespace IPC {
 namespace IPC {
 #include "atom/common/common_message_generator.h"
 }  // namespace IPC
-

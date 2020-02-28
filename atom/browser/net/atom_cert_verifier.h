@@ -13,23 +13,32 @@
 
 namespace atom {
 
-class AtomCTDelegate;
 class CertVerifierRequest;
+class RequireCTDelegate;
+
+struct VerifyRequestParams {
+  std::string hostname;
+  std::string default_result;
+  int error_code;
+  scoped_refptr<net::X509Certificate> certificate;
+
+  VerifyRequestParams();
+  VerifyRequestParams(const VerifyRequestParams&);
+  ~VerifyRequestParams();
+};
 
 class AtomCertVerifier : public net::CertVerifier {
  public:
-  explicit AtomCertVerifier(AtomCTDelegate* ct_delegate);
-  virtual ~AtomCertVerifier();
+  explicit AtomCertVerifier(RequireCTDelegate* ct_delegate);
+  ~AtomCertVerifier() override;
 
-  using VerifyProc = base::Callback<void(const std::string& hostname,
-                                         scoped_refptr<net::X509Certificate>,
-                                         const std::string& default_result,
-                                         const net::CompletionCallback&)>;
+  using VerifyProc = base::Callback<void(const VerifyRequestParams& request,
+                                         net::CompletionOnceCallback)>;
 
   void SetVerifyProc(const VerifyProc& proc);
 
   const VerifyProc verify_proc() const { return verify_proc_; }
-  AtomCTDelegate* ct_delegate() const { return ct_delegate_; }
+  RequireCTDelegate* ct_delegate() const { return ct_delegate_; }
   net::CertVerifier* default_verifier() const {
     return default_cert_verifier_.get();
   }
@@ -37,12 +46,11 @@ class AtomCertVerifier : public net::CertVerifier {
  protected:
   // net::CertVerifier:
   int Verify(const RequestParams& params,
-             net::CRLSet* crl_set,
              net::CertVerifyResult* verify_result,
-             const net::CompletionCallback& callback,
+             net::CompletionOnceCallback callback,
              std::unique_ptr<Request>* out_req,
-             const net::BoundNetLog& net_log) override;
-  bool SupportsOCSPStapling() override;
+             const net::NetLogWithSource& net_log) override;
+  void SetConfig(const Config& config) override;
 
  private:
   friend class CertVerifierRequest;
@@ -53,11 +61,11 @@ class AtomCertVerifier : public net::CertVerifier {
   std::map<RequestParams, CertVerifierRequest*> inflight_requests_;
   VerifyProc verify_proc_;
   std::unique_ptr<net::CertVerifier> default_cert_verifier_;
-  AtomCTDelegate* ct_delegate_;
+  RequireCTDelegate* ct_delegate_;
 
   DISALLOW_COPY_AND_ASSIGN(AtomCertVerifier);
 };
 
-}   // namespace atom
+}  // namespace atom
 
 #endif  // ATOM_BROWSER_NET_ATOM_CERT_VERIFIER_H_

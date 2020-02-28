@@ -5,46 +5,65 @@
 #ifndef ATOM_BROWSER_API_FRAME_SUBSCRIBER_H_
 #define ATOM_BROWSER_API_FRAME_SUBSCRIBER_H_
 
+#include <memory>
+
 #include "base/callback.h"
 #include "base/memory/weak_ptr.h"
-#include "content/public/browser/readback_types.h"
-#include "content/public/browser/render_widget_host_view.h"
-#include "content/public/browser/render_widget_host_view_frame_subscriber.h"
-#include "third_party/skia/include/core/SkBitmap.h"
-#include "ui/gfx/geometry/size.h"
+#include "components/viz/host/client_frame_sink_video_capturer.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "v8/include/v8.h"
+
+namespace gfx {
+class Image;
+}
 
 namespace atom {
 
 namespace api {
 
-class FrameSubscriber : public content::RenderWidgetHostViewFrameSubscriber {
+class WebContents;
+
+class FrameSubscriber : public content::WebContentsObserver,
+                        public viz::mojom::FrameSinkVideoConsumer {
  public:
   using FrameCaptureCallback =
-      base::Callback<void(v8::Local<v8::Value>, v8::Local<v8::Value>)>;
+      base::Callback<void(const gfx::Image&, const gfx::Rect&)>;
 
-  FrameSubscriber(v8::Isolate* isolate,
-                  content::RenderWidgetHostView* view,
+  FrameSubscriber(content::WebContents* web_contents,
                   const FrameCaptureCallback& callback,
                   bool only_dirty);
-
-  bool ShouldCaptureFrame(const gfx::Rect& damage_rect,
-                          base::TimeTicks present_time,
-                          scoped_refptr<media::VideoFrame>* storage,
-                          DeliverFrameCallback* callback) override;
+  ~FrameSubscriber() override;
 
  private:
-  void OnFrameDelivered(const FrameCaptureCallback& callback,
-                        const gfx::Rect& damage_rect,
-                        const SkBitmap& bitmap,
-                        content::ReadbackResponse response);
+  void AttachToHost(content::RenderWidgetHost* host);
+  void DetachFromHost();
 
-  v8::Isolate* isolate_;
-  content::RenderWidgetHostView* view_;
+  void RenderViewCreated(content::RenderViewHost* host) override;
+  void RenderViewDeleted(content::RenderViewHost* host) override;
+  void RenderViewHostChanged(content::RenderViewHost* old_host,
+                             content::RenderViewHost* new_host) override;
+
+  // viz::mojom::FrameSinkVideoConsumer implementation.
+  void OnFrameCaptured(
+      base::ReadOnlySharedMemoryRegion data,
+      ::media::mojom::VideoFrameInfoPtr info,
+      const gfx::Rect& content_rect,
+      viz::mojom::FrameSinkVideoConsumerFrameCallbacksPtr callbacks) override;
+  void OnStopped() override;
+
+  void Done(const gfx::Rect& damage, const SkBitmap& frame);
+
+  // Get the pixel size of render view.
+  gfx::Size GetRenderViewSize() const;
+
   FrameCaptureCallback callback_;
   bool only_dirty_;
 
-  base::WeakPtrFactory<FrameSubscriber> weak_factory_;
+  content::RenderWidgetHost* host_;
+  std::unique_ptr<viz::ClientFrameSinkVideoCapturer> video_capturer_;
+
+  base::WeakPtrFactory<FrameSubscriber> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(FrameSubscriber);
 };

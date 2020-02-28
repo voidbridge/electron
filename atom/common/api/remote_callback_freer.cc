@@ -4,38 +4,59 @@
 
 #include "atom/common/api/remote_callback_freer.h"
 
-#include "atom/common/api/api_messages.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/web_contents.h"
+#include "electron/atom/common/api/api.mojom.h"
+#include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 
 namespace atom {
 
 // static
 void RemoteCallbackFreer::BindTo(v8::Isolate* isolate,
                                  v8::Local<v8::Object> target,
+                                 int frame_id,
+                                 const std::string& context_id,
                                  int object_id,
                                  content::WebContents* web_contents) {
-  new RemoteCallbackFreer(isolate, target, object_id, web_contents);
+  new RemoteCallbackFreer(isolate, target, frame_id, context_id, object_id,
+                          web_contents);
 }
 
 RemoteCallbackFreer::RemoteCallbackFreer(v8::Isolate* isolate,
                                          v8::Local<v8::Object> target,
+                                         int frame_id,
+                                         const std::string& context_id,
                                          int object_id,
                                          content::WebContents* web_contents)
     : ObjectLifeMonitor(isolate, target),
       content::WebContentsObserver(web_contents),
-      object_id_(object_id) {
-}
+      frame_id_(frame_id),
+      context_id_(context_id),
+      object_id_(object_id) {}
 
-RemoteCallbackFreer::~RemoteCallbackFreer() {
-}
+RemoteCallbackFreer::~RemoteCallbackFreer() {}
 
 void RemoteCallbackFreer::RunDestructor() {
-  base::string16 channel =
-      base::ASCIIToUTF16("ELECTRON_RENDERER_RELEASE_CALLBACK");
+  auto* channel = "ELECTRON_RENDERER_RELEASE_CALLBACK";
   base::ListValue args;
+  int32_t sender_id = 0;
+  args.AppendString(context_id_);
   args.AppendInteger(object_id_);
-  Send(new AtomViewMsg_Message(routing_id(), false, "", channel, args));
+
+  auto frames = web_contents()->GetAllFrames();
+  auto iter = std::find_if(frames.begin(), frames.end(), [this](auto* f) {
+    return f->GetRoutingID() == frame_id_;
+  });
+
+  if (iter != frames.end() && (*iter)->IsRenderFrameLive()) {
+    mojom::ElectronRendererAssociatedPtr electron_ptr;
+    (*iter)->GetRemoteAssociatedInterfaces()->GetInterface(
+        mojo::MakeRequest(&electron_ptr));
+    electron_ptr->Message(true /* internal */, false /* send_to_all */, channel,
+                          args.Clone(), sender_id);
+  }
 
   Observe(nullptr);
 }

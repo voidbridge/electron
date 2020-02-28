@@ -4,14 +4,6 @@
 
 #include "atom/browser/ui/views/global_menu_bar_x11.h"
 
-#include <X11/Xlib.h>
-
-// This conflicts with mate::Converter,
-#undef True
-#undef False
-// and V8.
-#undef None
-
 #include <dlfcn.h>
 #include <glib-object.h>
 
@@ -25,6 +17,7 @@
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/accelerators/menu_label_accelerator_util_linux.h"
 #include "ui/events/keycodes/keyboard_code_conversion_x.h"
+#include "ui/gfx/x/x11.h"
 
 // libdbusmenu-glib types
 typedef struct _DbusmenuMenuitem DbusmenuMenuitem;
@@ -53,7 +46,7 @@ typedef DbusmenuMenuitem* (*dbusmenu_menuitem_property_set_int_func)(
     const char* property,
     int value);
 
-typedef struct _DbusmenuServer      DbusmenuServer;
+typedef struct _DbusmenuServer DbusmenuServer;
 typedef DbusmenuServer* (*dbusmenu_server_new_func)(const char* object);
 typedef void (*dbusmenu_server_set_root_func)(DbusmenuServer* self,
                                               DbusmenuMenuitem* root);
@@ -146,7 +139,7 @@ AtomMenuModel* ModelForMenuItem(DbusmenuMenuitem* item) {
       g_object_get_data(G_OBJECT(item), "model"));
 }
 
-bool GetMenuItemID(DbusmenuMenuitem* item, int *id) {
+bool GetMenuItemID(DbusmenuMenuitem* item, int* id) {
   gpointer id_ptr = g_object_get_data(G_OBJECT(item), "menu-id");
   if (id_ptr != NULL) {
     *id = GPOINTER_TO_INT(id_ptr) - 1;
@@ -163,12 +156,23 @@ void SetMenuItemID(DbusmenuMenuitem* item, int id) {
   g_object_set_data(G_OBJECT(item), "menu-id", GINT_TO_POINTER(id + 1));
 }
 
+std::string GetMenuModelStatus(AtomMenuModel* model) {
+  std::string ret;
+  for (int i = 0; i < model->GetItemCount(); ++i) {
+    int status = model->GetTypeAt(i) | (model->IsVisibleAt(i) << 3) |
+                 (model->IsEnabledAt(i) << 4) |
+                 (model->IsItemCheckedAt(i) << 5);
+    ret += base::StringPrintf(
+        "%s-%X\n", base::UTF16ToUTF8(model->GetLabelAt(i)).c_str(), status);
+  }
+  return ret;
+}
+
 }  // namespace
 
 GlobalMenuBarX11::GlobalMenuBarX11(NativeWindowViews* window)
     : window_(window),
-      xid_(window_->GetNativeWindow()->GetHost()->GetAcceleratedWidget()),
-      server_(NULL) {
+      xid_(window_->GetNativeWindow()->GetHost()->GetAcceleratedWidget()) {
   EnsureMethodsLoaded();
   if (server_new)
     InitServer(xid_);
@@ -195,7 +199,9 @@ void GlobalMenuBarX11::SetMenu(AtomMenuModel* menu_model) {
   DbusmenuMenuitem* root_item = menuitem_new();
   menuitem_property_set(root_item, kPropertyLabel, "Root");
   menuitem_property_set_bool(root_item, kPropertyVisible, true);
-  BuildMenuFromModel(menu_model, root_item);
+  if (menu_model != nullptr) {
+    BuildMenuFromModel(menu_model, root_item);
+  }
 
   server_set_root(server_, root_item);
   g_object_unref(root_item);
@@ -238,8 +244,8 @@ void GlobalMenuBarX11::BuildMenuFromModel(AtomMenuModel* model,
 
       if (type == AtomMenuModel::TYPE_SUBMENU) {
         menuitem_property_set(item, kPropertyChildrenDisplay, kDisplaySubmenu);
-        g_signal_connect(item, "about-to-show",
-                         G_CALLBACK(OnSubMenuShowThunk), this);
+        g_signal_connect(item, "about-to-show", G_CALLBACK(OnSubMenuShowThunk),
+                         this);
       } else {
         ui::Accelerator accelerator;
         if (model->GetAcceleratorAtWithParams(i, true, &accelerator))
@@ -250,10 +256,11 @@ void GlobalMenuBarX11::BuildMenuFromModel(AtomMenuModel* model,
 
         if (type == AtomMenuModel::TYPE_CHECK ||
             type == AtomMenuModel::TYPE_RADIO) {
-          menuitem_property_set(item, kPropertyToggleType,
+          menuitem_property_set(
+              item, kPropertyToggleType,
               type == AtomMenuModel::TYPE_CHECK ? kToggleCheck : kToggleRadio);
           menuitem_property_set_int(item, kPropertyToggleState,
-              model->IsItemCheckedAt(i));
+                                    model->IsItemCheckedAt(i));
         }
       }
     }
@@ -277,8 +284,8 @@ void GlobalMenuBarX11::RegisterAccelerator(DbusmenuMenuitem* item,
   if (accelerator.IsShiftDown())
     g_variant_builder_add(&builder, "s", "Shift");
 
-  char* name = XKeysymToString(XKeysymForWindowsKeyCode(
-      accelerator.key_code(), false));
+  char* name =
+      XKeysymToString(XKeysymForWindowsKeyCode(accelerator.key_code(), false));
   if (!name) {
     NOTIMPLEMENTED();
     return;
@@ -307,8 +314,18 @@ void GlobalMenuBarX11::OnSubMenuShow(DbusmenuMenuitem* item) {
   if (!model || !GetMenuItemID(item, &id))
     return;
 
+  // Do not update menu if the submenu has not been changed.
+  std::string status = GetMenuModelStatus(model);
+  char* old = static_cast<char*>(g_object_get_data(G_OBJECT(item), "status"));
+  if (old && status == old)
+    return;
+
+  // Save the new status.
+  g_object_set_data_full(G_OBJECT(item), "status", g_strdup(status.c_str()),
+                         g_free);
+
   // Clear children.
-  GList *children = menuitem_take_children(item);
+  GList* children = menuitem_take_children(item);
   g_list_foreach(children, reinterpret_cast<GFunc>(g_object_unref), NULL);
   g_list_free(children);
 

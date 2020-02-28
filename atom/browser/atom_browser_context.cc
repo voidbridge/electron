@@ -4,46 +4,44 @@
 
 #include "atom/browser/atom_browser_context.h"
 
-#include "atom/browser/api/atom_api_protocol.h"
+#include <utility>
+
 #include "atom/browser/atom_blob_reader.h"
+#include "atom/browser/atom_browser_client.h"
 #include "atom/browser/atom_browser_main_parts.h"
 #include "atom/browser/atom_download_manager_delegate.h"
+#include "atom/browser/atom_paths.h"
 #include "atom/browser/atom_permission_manager.h"
-#include "atom/browser/browser.h"
-#include "atom/browser/net/about_protocol_handler.h"
-#include "atom/browser/net/asar/asar_protocol_handler.h"
-#include "atom/browser/net/atom_cert_verifier.h"
-#include "atom/browser/net/atom_ct_delegate.h"
-#include "atom/browser/net/atom_network_delegate.h"
-#include "atom/browser/net/atom_ssl_config_service.h"
-#include "atom/browser/net/atom_url_request_job_factory.h"
-#include "atom/browser/net/http_protocol_handler.h"
+#include "atom/browser/cookie_change_notifier.h"
+#include "atom/browser/net/resolve_proxy_helper.h"
+#include "atom/browser/pref_store_delegate.h"
+#include "atom/browser/special_storage_policy.h"
+#include "atom/browser/ui/inspectable_web_contents_impl.h"
 #include "atom/browser/web_view_manager.h"
-#include "atom/common/atom_version.h"
-#include "atom/common/chrome_version.h"
+#include "atom/browser/zoom_level_delegate.h"
+#include "atom/common/application_info.h"
 #include "atom/common/options_switches.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-#include "base/memory/ptr_util.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
-#include "base/threading/sequenced_worker_pool.h"
-#include "base/threading/worker_pool.h"
+#include "base/threading/sequenced_task_runner_handle.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
+#include "components/keyed_service/content/browser_context_dependency_manager.h"
+#include "components/prefs/json_pref_store.h"
 #include "components/prefs/pref_registry_simple.h"
-#include "content/browser/blob_storage/chrome_blob_storage_context.h"
+#include "components/prefs/pref_service.h"
+#include "components/prefs/pref_service_factory.h"
+#include "components/prefs/value_map_pref_store.h"
+#include "components/proxy_config/pref_proxy_config_tracker_impl.h"
+#include "components/proxy_config/proxy_config_pref_names.h"
+#include "content/browser/blob_storage/chrome_blob_storage_context.h"  // nogncheck
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/storage_partition.h"
-#include "content/public/common/url_constants.h"
-#include "content/public/common/user_agent.h"
-#include "net/ftp/ftp_network_layer.h"
-#include "net/url_request/data_protocol_handler.h"
-#include "net/url_request/ftp_protocol_handler.h"
-#include "net/url_request/url_request_context.h"
-#include "net/url_request/url_request_intercepting_job_factory.h"
-#include "url/url_constants.h"
+#include "net/base/escape.h"
+#include "services/network/public/cpp/features.h"
 
 using content::BrowserThread;
 
@@ -51,131 +49,198 @@ namespace atom {
 
 namespace {
 
-class NoCacheBackend : public net::HttpCache::BackendFactory {
-  int CreateBackend(net::NetLog* net_log,
-                    std::unique_ptr<disk_cache::Backend>* backend,
-                    const net::CompletionCallback& callback) override {
-    return net::ERR_FAILED;
-  }
-};
-
-std::string RemoveWhitespace(const std::string& str) {
-  std::string trimmed;
-  if (base::RemoveChars(str, " ", &trimmed))
-    return trimmed;
-  else
-    return str;
+// Convert string to lower case and escape it.
+std::string MakePartitionName(const std::string& input) {
+  return net::EscapePath(base::ToLowerASCII(input));
 }
 
 }  // namespace
 
+// static
+AtomBrowserContext::BrowserContextMap AtomBrowserContext::browser_context_map_;
+
 AtomBrowserContext::AtomBrowserContext(const std::string& partition,
                                        bool in_memory,
                                        const base::DictionaryValue& options)
-    : brightray::BrowserContext(partition, in_memory),
-      ct_delegate_(new AtomCTDelegate),
-      network_delegate_(new AtomNetworkDelegate),
-      cookie_delegate_(new AtomCookieDelegate) {
-  // Construct user agent string.
-  Browser* browser = Browser::Get();
-  std::string name = RemoveWhitespace(browser->GetName());
-  std::string user_agent;
-  if (name == ATOM_PRODUCT_NAME) {
-    user_agent = "Chrome/" CHROME_VERSION_STRING " "
-                 ATOM_PRODUCT_NAME "/" ATOM_VERSION_STRING;
-  } else {
-    user_agent = base::StringPrintf(
-        "%s/%s Chrome/%s " ATOM_PRODUCT_NAME "/" ATOM_VERSION_STRING,
-        name.c_str(),
-        browser->GetVersion().c_str(),
-        CHROME_VERSION_STRING);
-  }
-  user_agent_ = content::BuildUserAgentFromProduct(user_agent);
+    : base::RefCountedDeleteOnSequence<AtomBrowserContext>(
+          base::ThreadTaskRunnerHandle::Get()),
+      in_memory_pref_store_(nullptr),
+      storage_policy_(new SpecialStoragePolicy),
+      in_memory_(in_memory),
+      weak_factory_(this) {
+  user_agent_ = AtomBrowserClient::Get()->GetUserAgent();
 
   // Read options.
-  use_cache_ = true;
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  use_cache_ = !command_line->HasSwitch(switches::kDisableHttpCache);
   options.GetBoolean("cache", &use_cache_);
 
-  // Initialize Pref Registry in brightray.
+  base::StringToInt(command_line->GetSwitchValueASCII(switches::kDiskCacheSize),
+                    &max_cache_size_);
+
+  if (!base::PathService::Get(DIR_USER_DATA, &path_)) {
+    base::PathService::Get(DIR_APP_DATA, &path_);
+    path_ = path_.Append(base::FilePath::FromUTF8Unsafe(GetApplicationName()));
+    base::PathService::Override(DIR_USER_DATA, path_);
+  }
+
+  if (!in_memory && !partition.empty())
+    path_ = path_.Append(FILE_PATH_LITERAL("Partitions"))
+                .Append(base::FilePath::FromUTF8Unsafe(
+                    MakePartitionName(partition)));
+
+  content::BrowserContext::Initialize(this, path_);
+
+  // Initialize Pref Registry.
   InitPrefs();
+
+  if (!base::FeatureList::IsEnabled(network::features::kNetworkService)) {
+    proxy_config_monitor_ = std::make_unique<ProxyConfigMonitor>(prefs_.get());
+    io_handle_ =
+        new URLRequestContextGetter::Handle(weak_factory_.GetWeakPtr());
+  }
+
+  cookie_change_notifier_ = std::make_unique<CookieChangeNotifier>(this);
+
+  BrowserContextDependencyManager::GetInstance()->MarkBrowserContextLive(this);
 }
 
 AtomBrowserContext::~AtomBrowserContext() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  NotifyWillBeDestroyed(this);
+  ShutdownStoragePartitions();
+
+  if (!base::FeatureList::IsEnabled(network::features::kNetworkService)) {
+    io_handle_->ShutdownOnUIThread();
+  } else {
+    BrowserThread::DeleteSoon(BrowserThread::IO, FROM_HERE,
+                              std::move(resource_context_));
+  }
+
+  // Notify any keyed services of browser context destruction.
+  BrowserContextDependencyManager::GetInstance()->DestroyBrowserContextServices(
+      this);
+}
+
+void AtomBrowserContext::InitPrefs() {
+  auto prefs_path = GetPath().Append(FILE_PATH_LITERAL("Preferences"));
+  base::ThreadRestrictions::ScopedAllowIO allow_io;
+  PrefServiceFactory prefs_factory;
+  scoped_refptr<JsonPrefStore> pref_store =
+      base::MakeRefCounted<JsonPrefStore>(prefs_path);
+  pref_store->ReadPrefs();  // Synchronous.
+  prefs_factory.set_user_prefs(pref_store);
+
+  auto registry = WrapRefCounted(new PrefRegistrySimple);
+
+  registry->RegisterFilePathPref(prefs::kSelectFileLastDirectory,
+                                 base::FilePath());
+  base::FilePath download_dir;
+  base::PathService::Get(chrome::DIR_DEFAULT_DOWNLOADS, &download_dir);
+  registry->RegisterFilePathPref(prefs::kDownloadDefaultDirectory,
+                                 download_dir);
+  registry->RegisterDictionaryPref(prefs::kDevToolsFileSystemPaths);
+  InspectableWebContentsImpl::RegisterPrefs(registry.get());
+  MediaDeviceIDSalt::RegisterPrefs(registry.get());
+  ZoomLevelDelegate::RegisterPrefs(registry.get());
+  PrefProxyConfigTrackerImpl::RegisterPrefs(registry.get());
+
+  prefs_ = prefs_factory.Create(
+      registry.get(),
+      std::make_unique<PrefStoreDelegate>(weak_factory_.GetWeakPtr()));
+  prefs_->UpdateCommandLinePrefStore(new ValueMapPrefStore);
 }
 
 void AtomBrowserContext::SetUserAgent(const std::string& user_agent) {
   user_agent_ = user_agent;
 }
 
-net::NetworkDelegate* AtomBrowserContext::CreateNetworkDelegate() {
-  return network_delegate_;
-}
-
-net::CookieMonsterDelegate* AtomBrowserContext::CreateCookieDelegate() {
-  return cookie_delegate();
-}
-
-std::string AtomBrowserContext::GetUserAgent() {
-  return user_agent_;
-}
-
-std::unique_ptr<net::URLRequestJobFactory>
-AtomBrowserContext::CreateURLRequestJobFactory(
-    content::ProtocolHandlerMap* protocol_handlers) {
-  std::unique_ptr<AtomURLRequestJobFactory> job_factory(
-      new AtomURLRequestJobFactory);
-
-  for (auto& it : *protocol_handlers) {
-    job_factory->SetProtocolHandler(it.first,
-                                    base::WrapUnique(it.second.release()));
+net::URLRequestContextGetter* AtomBrowserContext::CreateRequestContext(
+    content::ProtocolHandlerMap* protocol_handlers,
+    content::URLRequestInterceptorScopedVector protocol_interceptors) {
+  if (!base::FeatureList::IsEnabled(network::features::kNetworkService)) {
+    return io_handle_
+        ->CreateMainRequestContextGetter(protocol_handlers,
+                                         std::move(protocol_interceptors))
+        .get();
+  } else {
+    NOTREACHED();
+    return nullptr;
   }
-  protocol_handlers->clear();
-
-  job_factory->SetProtocolHandler(url::kAboutScheme,
-                                  base::WrapUnique(new AboutProtocolHandler));
-  job_factory->SetProtocolHandler(
-      url::kDataScheme, base::WrapUnique(new net::DataProtocolHandler));
-  job_factory->SetProtocolHandler(
-      url::kFileScheme, base::WrapUnique(new asar::AsarProtocolHandler(
-          BrowserThread::GetBlockingPool()->GetTaskRunnerWithShutdownBehavior(
-              base::SequencedWorkerPool::SKIP_ON_SHUTDOWN))));
-  job_factory->SetProtocolHandler(
-      url::kHttpScheme,
-      base::WrapUnique(new HttpProtocolHandler(url::kHttpScheme)));
-  job_factory->SetProtocolHandler(
-      url::kHttpsScheme,
-      base::WrapUnique(new HttpProtocolHandler(url::kHttpsScheme)));
-  job_factory->SetProtocolHandler(
-      url::kWsScheme,
-      base::WrapUnique(new HttpProtocolHandler(url::kWsScheme)));
-  job_factory->SetProtocolHandler(
-      url::kWssScheme,
-      base::WrapUnique(new HttpProtocolHandler(url::kWssScheme)));
-
-  auto host_resolver =
-      url_request_context_getter()->GetURLRequestContext()->host_resolver();
-  job_factory->SetProtocolHandler(
-      url::kFtpScheme,
-      base::WrapUnique(new net::FtpProtocolHandler(
-          new net::FtpNetworkLayer(host_resolver))));
-
-  return std::move(job_factory);
 }
 
-net::HttpCache::BackendFactory*
-AtomBrowserContext::CreateHttpCacheBackendFactory(
-    const base::FilePath& base_path) {
-  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  if (!use_cache_ || command_line->HasSwitch(switches::kDisableHttpCache))
-    return new NoCacheBackend;
-  else
-    return brightray::BrowserContext::CreateHttpCacheBackendFactory(base_path);
+net::URLRequestContextGetter* AtomBrowserContext::CreateMediaRequestContext() {
+  if (!base::FeatureList::IsEnabled(network::features::kNetworkService)) {
+    return io_handle_->GetMainRequestContextGetter().get();
+  } else {
+    NOTREACHED();
+    return nullptr;
+  }
+}
+
+net::URLRequestContextGetter* AtomBrowserContext::GetRequestContext() {
+  if (!base::FeatureList::IsEnabled(network::features::kNetworkService)) {
+    return GetDefaultStoragePartition(this)->GetURLRequestContext();
+  } else {
+    NOTREACHED();
+    return nullptr;
+  }
+}
+
+network::mojom::NetworkContextPtr AtomBrowserContext::GetNetworkContext() {
+  if (!base::FeatureList::IsEnabled(network::features::kNetworkService)) {
+    return io_handle_->GetNetworkContext();
+  } else {
+    NOTREACHED();
+    return nullptr;
+  }
+}
+
+base::FilePath AtomBrowserContext::GetPath() const {
+  return path_;
+}
+
+bool AtomBrowserContext::IsOffTheRecord() const {
+  return in_memory_;
+}
+
+bool AtomBrowserContext::CanUseHttpCache() const {
+  return use_cache_;
+}
+
+int AtomBrowserContext::GetMaxCacheSize() const {
+  return max_cache_size_;
+}
+
+content::ResourceContext* AtomBrowserContext::GetResourceContext() {
+  if (!base::FeatureList::IsEnabled(network::features::kNetworkService)) {
+    return io_handle_->GetResourceContext();
+  } else {
+    if (!resource_context_)
+      resource_context_.reset(new content::ResourceContext);
+    return resource_context_.get();
+  }
+}
+
+std::string AtomBrowserContext::GetMediaDeviceIDSalt() {
+  if (!media_device_id_salt_.get())
+    media_device_id_salt_.reset(new MediaDeviceIDSalt(prefs_.get()));
+  return media_device_id_salt_->GetSalt();
+}
+
+std::unique_ptr<content::ZoomLevelDelegate>
+AtomBrowserContext::CreateZoomLevelDelegate(
+    const base::FilePath& partition_path) {
+  if (!IsOffTheRecord()) {
+    return std::make_unique<ZoomLevelDelegate>(prefs(), partition_path);
+  }
+  return std::unique_ptr<content::ZoomLevelDelegate>();
 }
 
 content::DownloadManagerDelegate*
 AtomBrowserContext::GetDownloadManagerDelegate() {
   if (!download_manager_delegate_.get()) {
-    auto download_manager = content::BrowserContext::GetDownloadManager(this);
+    auto* download_manager = content::BrowserContext::GetDownloadManager(this);
     download_manager_delegate_.reset(
         new AtomDownloadManagerDelegate(download_manager));
   }
@@ -188,65 +253,96 @@ content::BrowserPluginGuestManager* AtomBrowserContext::GetGuestManager() {
   return guest_manager_.get();
 }
 
-content::PermissionManager* AtomBrowserContext::GetPermissionManager() {
+content::PermissionControllerDelegate*
+AtomBrowserContext::GetPermissionControllerDelegate() {
   if (!permission_manager_.get())
     permission_manager_.reset(new AtomPermissionManager);
   return permission_manager_.get();
 }
 
-std::unique_ptr<net::CertVerifier> AtomBrowserContext::CreateCertVerifier() {
-  return base::WrapUnique(new AtomCertVerifier(ct_delegate_.get()));
+storage::SpecialStoragePolicy* AtomBrowserContext::GetSpecialStoragePolicy() {
+  return storage_policy_.get();
 }
 
-net::SSLConfigService* AtomBrowserContext::CreateSSLConfigService() {
-  return new AtomSSLConfigService;
-}
-
-std::vector<std::string> AtomBrowserContext::GetCookieableSchemes() {
-  auto default_schemes = brightray::BrowserContext::GetCookieableSchemes();
-  const auto& standard_schemes = atom::api::GetStandardSchemes();
-  default_schemes.insert(default_schemes.end(),
-                         standard_schemes.begin(), standard_schemes.end());
-  return default_schemes;
-}
-
-net::TransportSecurityState::RequireCTDelegate*
-AtomBrowserContext::GetRequireCTDelegate() {
-  return ct_delegate_.get();
-}
-
-void AtomBrowserContext::RegisterPrefs(PrefRegistrySimple* pref_registry) {
-  pref_registry->RegisterFilePathPref(prefs::kSelectFileLastDirectory,
-                                      base::FilePath());
-  base::FilePath download_dir;
-  PathService::Get(chrome::DIR_DEFAULT_DOWNLOADS, &download_dir);
-  pref_registry->RegisterFilePathPref(prefs::kDownloadDefaultDirectory,
-                                      download_dir);
-  pref_registry->RegisterDictionaryPref(prefs::kDevToolsFileSystemPaths);
+std::string AtomBrowserContext::GetUserAgent() const {
+  return user_agent_;
 }
 
 AtomBlobReader* AtomBrowserContext::GetBlobReader() {
   if (!blob_reader_.get()) {
     content::ChromeBlobStorageContext* blob_context =
         content::ChromeBlobStorageContext::GetFor(this);
-    storage::FileSystemContext* file_system_context =
-        content::BrowserContext::GetStoragePartition(
-            this, nullptr)->GetFileSystemContext();
-    blob_reader_.reset(new AtomBlobReader(blob_context,
-                                          file_system_context));
+    blob_reader_.reset(new AtomBlobReader(blob_context));
   }
   return blob_reader_.get();
 }
 
+content::PushMessagingService* AtomBrowserContext::GetPushMessagingService() {
+  return nullptr;
+}
+
+content::SSLHostStateDelegate* AtomBrowserContext::GetSSLHostStateDelegate() {
+  return nullptr;
+}
+
+content::BackgroundFetchDelegate*
+AtomBrowserContext::GetBackgroundFetchDelegate() {
+  return nullptr;
+}
+
+content::BackgroundSyncController*
+AtomBrowserContext::GetBackgroundSyncController() {
+  return nullptr;
+}
+
+content::BrowsingDataRemoverDelegate*
+AtomBrowserContext::GetBrowsingDataRemoverDelegate() {
+  return nullptr;
+}
+
+content::ClientHintsControllerDelegate*
+AtomBrowserContext::GetClientHintsControllerDelegate() {
+  return nullptr;
+}
+
+net::URLRequestContextGetter*
+AtomBrowserContext::CreateRequestContextForStoragePartition(
+    const base::FilePath& partition_path,
+    bool in_memory,
+    content::ProtocolHandlerMap* protocol_handlers,
+    content::URLRequestInterceptorScopedVector request_interceptors) {
+  NOTREACHED();
+  return nullptr;
+}
+
+net::URLRequestContextGetter*
+AtomBrowserContext::CreateMediaRequestContextForStoragePartition(
+    const base::FilePath& partition_path,
+    bool in_memory) {
+  NOTREACHED();
+  return nullptr;
+}
+
+ResolveProxyHelper* AtomBrowserContext::GetResolveProxyHelper() {
+  if (!resolve_proxy_helper_) {
+    resolve_proxy_helper_ = base::MakeRefCounted<ResolveProxyHelper>(this);
+  }
+  return resolve_proxy_helper_.get();
+}
+
 // static
 scoped_refptr<AtomBrowserContext> AtomBrowserContext::From(
-    const std::string& partition, bool in_memory,
+    const std::string& partition,
+    bool in_memory,
     const base::DictionaryValue& options) {
-  auto browser_context = brightray::BrowserContext::Get(partition, in_memory);
+  PartitionKey key(partition, in_memory);
+  auto* browser_context = browser_context_map_[key].get();
   if (browser_context)
-    return static_cast<AtomBrowserContext*>(browser_context.get());
+    return scoped_refptr<AtomBrowserContext>(browser_context);
 
-  return new AtomBrowserContext(partition, in_memory, options);
+  auto* new_context = new AtomBrowserContext(partition, in_memory, options);
+  browser_context_map_[key] = new_context->GetWeakPtr();
+  return scoped_refptr<AtomBrowserContext>(new_context);
 }
 
 }  // namespace atom

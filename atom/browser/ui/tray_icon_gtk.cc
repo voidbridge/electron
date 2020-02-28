@@ -5,26 +5,17 @@
 #include "atom/browser/ui/tray_icon_gtk.h"
 
 #include "atom/browser/browser.h"
+#include "atom/common/application_info.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/ui/libgtk2ui/app_indicator_icon.h"
-#include "chrome/browser/ui/libgtk2ui/gtk2_status_icon.h"
 #include "ui/gfx/image/image.h"
+#include "ui/views/linux_ui/linux_ui.h"
 
 namespace atom {
 
-namespace {
+TrayIconGtk::TrayIconGtk() {}
 
-// Number of app indicators used (used as part of app-indicator id).
-int indicators_count;
-
-}  // namespace
-
-TrayIconGtk::TrayIconGtk() {
-}
-
-TrayIconGtk::~TrayIconGtk() {
-}
+TrayIconGtk::~TrayIconGtk() {}
 
 void TrayIconGtk::SetImage(const gfx::Image& image) {
   if (icon_) {
@@ -32,17 +23,9 @@ void TrayIconGtk::SetImage(const gfx::Image& image) {
     return;
   }
 
-  base::string16 empty;
-  if (libgtk2ui::AppIndicatorIcon::CouldOpen()) {
-    ++indicators_count;
-    icon_.reset(new libgtk2ui::AppIndicatorIcon(
-        base::StringPrintf(
-            "%s%d", Browser::Get()->GetName().c_str(), indicators_count),
-        image.AsImageSkia(),
-        empty));
-  } else {
-    icon_.reset(new libgtk2ui::Gtk2StatusIcon(image.AsImageSkia(), empty));
-  }
+  const auto toolTip = base::UTF8ToUTF16(GetApplicationName());
+  icon_ = views::LinuxUI::instance()->CreateLinuxStatusIcon(
+      image.AsImageSkia(), toolTip, Browser::Get()->GetName().c_str());
   icon_->set_delegate(this);
 }
 

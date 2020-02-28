@@ -2,46 +2,32 @@
 
 import atexit
 import contextlib
+import datetime
 import errno
+import json
+import os
 import platform
 import re
 import shutil
 import ssl
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
 import urllib2
-import os
 import zipfile
 
-from config import is_verbose_mode
-from env_util import get_vs_env
+from lib.config import is_verbose_mode, PLATFORM
+from lib.env_util import get_vs_env
 
+SRC_DIR = os.path.abspath(os.path.join(__file__, '..', '..', '..', '..'))
 BOTO_DIR = os.path.abspath(os.path.join(__file__, '..', '..', '..', 'vendor',
                                         'boto'))
 
-
-def get_host_arch():
-  """Returns the host architecture with a predictable string."""
-  host_arch = platform.machine()
-
-  # Convert machine type to format recognized by gyp.
-  if re.match(r'i.86', host_arch) or host_arch == 'i86pc':
-    host_arch = 'ia32'
-  elif host_arch in ['x86_64', 'amd64']:
-    host_arch = 'x64'
-  elif host_arch.startswith('arm'):
-    host_arch = 'arm'
-
-  # platform.machine is based on running kernel. It's possible to use 64-bit
-  # kernel with 32-bit userland, e.g. to give linker slightly more memory.
-  # Distinguish between different userland bitness by querying
-  # the python binary.
-  if host_arch == 'x64' and platform.architecture()[0] == '32bit':
-    host_arch = 'ia32'
-
-  return host_arch
+NPM = 'npm'
+if sys.platform in ['win32', 'cygwin']:
+  NPM += '.cmd'
 
 
 def tempdir(prefix=''):
@@ -78,12 +64,13 @@ def download(text, url, path):
     if hasattr(ssl, '_create_unverified_context'):
       ssl._create_default_https_context = ssl._create_unverified_context
 
+    print "Downloading %s to %s" % (url, path)
     web_file = urllib2.urlopen(url)
     file_size = int(web_file.info().getheaders("Content-Length")[0])
     downloaded_size = 0
-    block_size = 128
+    block_size = 4096
 
-    ci = os.environ.get('CI') == '1'
+    ci = os.environ.get('CI') is not None
 
     while True:
       buf = web_file.read(block_size)
@@ -121,10 +108,11 @@ def extract_zip(zip_path, destination):
 def make_zip(zip_file_path, files, dirs):
   safe_unlink(zip_file_path)
   if sys.platform == 'darwin':
-    files += dirs
-    execute(['zip', '-r', '-y', zip_file_path] + files)
+    allfiles = files + dirs
+    execute(['zip', '-r', '-y', zip_file_path] + allfiles)
   else:
-    zip_file = zipfile.ZipFile(zip_file_path, "w", zipfile.ZIP_DEFLATED)
+    zip_file = zipfile.ZipFile(zip_file_path, "w", zipfile.ZIP_DEFLATED,
+                               allowZip64=True)
     for filename in files:
       zip_file.write(filename, filename)
     for dirname in dirs:
@@ -157,11 +145,14 @@ def safe_mkdir(path):
       raise
 
 
-def execute(argv, env=os.environ):
+def execute(argv, env=None, cwd=None):
+  if env is None:
+    env = os.environ
   if is_verbose_mode():
     print ' '.join(argv)
   try:
-    output = subprocess.check_output(argv, stderr=subprocess.STDOUT, env=env)
+    output = subprocess.check_output(argv, stderr=subprocess.STDOUT,
+                                     env=env, cwd=cwd)
     if is_verbose_mode():
       print output
     return output
@@ -170,40 +161,30 @@ def execute(argv, env=os.environ):
     raise e
 
 
-def execute_stdout(argv, env=os.environ):
+def execute_stdout(argv, env=None, cwd=None):
+  if env is None:
+    env = os.environ
   if is_verbose_mode():
     print ' '.join(argv)
     try:
-      subprocess.check_call(argv, env=env)
+      subprocess.check_call(argv, env=env, cwd=cwd)
     except subprocess.CalledProcessError as e:
       print e.output
       raise e
   else:
-    execute(argv, env)
+    execute(argv, env, cwd)
 
-
-def electron_gyp():
+def get_electron_branding():
   SOURCE_ROOT = os.path.abspath(os.path.join(__file__, '..', '..', '..'))
-  gyp = os.path.join(SOURCE_ROOT, 'electron.gyp')
-  with open(gyp) as f:
-    obj = eval(f.read());
-    return obj['variables']
-
+  branding_file_path = os.path.join(SOURCE_ROOT, 'atom', 'app', 'BRANDING.json')
+  with open(branding_file_path) as f:
+    return json.load(f)
 
 def get_electron_version():
-  return 'v' + electron_gyp()['version%']
-
-
-def parse_version(version):
-  if version[0] == 'v':
-    version = version[1:]
-
-  vs = version.split('.')
-  if len(vs) > 4:
-    return vs[0:4]
-  else:
-    return vs + ['0'] * (4 - len(vs))
-
+  SOURCE_ROOT = os.path.abspath(os.path.join(__file__, '..', '..', '..'))
+  version_file = os.path.join(SOURCE_ROOT, 'ELECTRON_VERSION')
+  with open(version_file) as f:
+    return 'v' + f.read().strip()
 
 def boto_path_dirs():
   return [
@@ -234,13 +215,41 @@ def s3put(bucket, access_key, secret_key, prefix, key_prefix, files):
   run_boto_script(access_key, secret_key, 's3put', *args)
 
 
-def import_vs_env(target_arch):
-  if sys.platform != 'win32':
-    return
+def add_exec_bit(filename):
+  os.chmod(filename, os.stat(filename).st_mode | stat.S_IEXEC)
 
-  if target_arch == 'ia32':
-    vs_arch = 'amd64_x86'
-  else:
-    vs_arch = 'x86_amd64'
-  env = get_vs_env('14.0', vs_arch)
-  os.environ.update(env)
+def get_out_dir():
+  out_dir = 'Debug'
+  override = os.environ.get('ELECTRON_OUT_DIR')
+  if override is not None:
+    out_dir = override
+  return os.path.join(SRC_DIR, 'out', out_dir)
+
+# NOTE: This path is not created by gn, it is used as a scratch zone by our
+#       upload scripts
+def get_dist_dir():
+  return os.path.join(get_out_dir(), 'gen', 'electron_dist')
+
+def get_electron_exec():
+  out_dir = get_out_dir()
+
+  if sys.platform == 'darwin':
+    return '{0}/Electron.app/Contents/MacOS/Electron'.format(out_dir)
+  elif sys.platform == 'win32':
+    return '{0}/electron.exe'.format(out_dir)
+  elif sys.platform == 'linux':
+    return '{0}/electron'.format(out_dir)
+
+  raise Exception(
+      "get_electron_exec: unexpected platform '{0}'".format(sys.platform))
+
+def get_objcopy_path(target_cpu):
+  if PLATFORM != 'linux':
+    raise Exception(
+      "get_objcopy_path: unexpected platform '{0}'".format(PLATFORM))
+
+  if target_cpu != 'x64':
+      raise Exception(
+      "get_objcopy_path: unexpected target cpu '{0}'".format(target_cpu))
+  return os.path.join(SRC_DIR, 'third_party', 'binutils', 'Linux_x64',
+                        'Release', 'bin', 'objcopy')

@@ -7,7 +7,7 @@ your app's main script before the [ready][ready] event of the [app][app] module
 is emitted:
 
 ```javascript
-const {app} = require('electron')
+const { app } = require('electron')
 app.commandLine.appendSwitch('remote-debugging-port', '8315')
 app.commandLine.appendSwitch('host-rules', 'MAP * 127.0.0.1')
 
@@ -28,7 +28,11 @@ Disables the disk cache for HTTP requests.
 
 Disable HTTP/2 and SPDY/3.1 protocols.
 
-## --debug=`port` and --debug-brk=`port`
+## --lang
+
+Set a custom locale.
+
+## --inspect=`port` and --inspect-brk=`port`
 
 Debug-related flags, see the [Debugging the Main Process][debugging-main-process] guide for details.
 
@@ -36,12 +40,16 @@ Debug-related flags, see the [Debugging the Main Process][debugging-main-process
 
 Enables remote debugging over HTTP on the specified `port`.
 
+## --disk-cache-size=`size`
+
+Forces the maximum disk space to be used by the disk cache, in bytes.
+
 ## --js-flags=`flags`
 
 Specifies the flags passed to the Node JS engine. It has to be passed when starting
 Electron if you want to enable the `flags` in the main process.
 
-```bash
+```sh
 $ electron --js-flags="--harmony_proxies --harmony_collections" your-app
 ```
 
@@ -52,7 +60,8 @@ See the [Node documentation][node-cli] or run `node --help` in your terminal for
 Use a specified proxy server, which overrides the system setting. This switch
 only affects requests with HTTP protocol, including HTTPS and WebSocket
 requests. It is also noteworthy that not all proxy servers support HTTPS and
-WebSocket requests.
+WebSocket requests. The proxy URL does not support username and password
+authentication [per Chromium issue](https://bugs.chromium.org/p/chromium/issues/detail?id=615947).
 
 ## --proxy-bypass-list=`hosts`
 
@@ -63,7 +72,7 @@ list of hosts. This flag has an effect only if used in tandem with
 For example:
 
 ```javascript
-const {app} = require('electron')
+const { app } = require('electron')
 app.commandLine.appendSwitch('proxy-bypass-list', '<local>;*.google.com;*foo.com;1.2.3.4:5678')
 ```
 
@@ -108,7 +117,7 @@ A comma-separated list of servers for which integrated authentication is enabled
 
 For example:
 
-```
+```sh
 --auth-server-whitelist='*example.com, *foobar.com, *baz'
 ```
 
@@ -135,15 +144,6 @@ Sets the `version` of the pepper flash plugin.
 ## --log-net-log=`path`
 
 Enables net log events to be saved and writes them to `path`.
-
-## --ssl-version-fallback-min=`version`
-
-Sets the minimum SSL/TLS version (`tls1`, `tls1.1` or `tls1.2`) that TLS
-fallback will accept.
-
-## --cipher-suite-blacklist=`cipher_suites`
-
-Specifies comma-separated list of SSL cipher suites to disable.
 
 ## --disable-renderer-backgrounding
 
@@ -176,7 +176,7 @@ Gives the per-module maximal V-logging levels to override the value given by
 source files `my_module.*` and `foo*.*`.
 
 Any pattern containing a forward or backward slash will be tested against the
-whole pathname and not just the module. E.g. `*/foo/bar/*=2` would change the
+whole pathname and not only the module. E.g. `*/foo/bar/*=2` would change the
 logging level for all code in the source files under a `foo/bar` directory.
 
 This switch only works when `--enable-logging` is also passed.

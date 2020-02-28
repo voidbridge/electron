@@ -4,31 +4,48 @@
 #ifndef ATOM_RENDERER_ATOM_SANDBOXED_RENDERER_CLIENT_H_
 #define ATOM_RENDERER_ATOM_SANDBOXED_RENDERER_CLIENT_H_
 
+#include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
-#include "content/public/renderer/content_renderer_client.h"
-#include "content/public/renderer/render_frame.h"
+#include "atom/renderer/renderer_client_base.h"
+#include "base/process/process_metrics.h"
 
 namespace atom {
 
-class AtomSandboxedRendererClient : public content::ContentRendererClient {
+class AtomSandboxedRendererClient : public RendererClientBase {
  public:
   AtomSandboxedRendererClient();
-  virtual ~AtomSandboxedRendererClient();
+  ~AtomSandboxedRendererClient() override;
 
-  void DidCreateScriptContext(
-      v8::Handle<v8::Context> context, content::RenderFrame* render_frame);
-  void WillReleaseScriptContext(
-      v8::Handle<v8::Context> context, content::RenderFrame* render_frame);
-  void InvokeBindingCallback(v8::Handle<v8::Context> context,
-                             std::string callback_name,
-                             std::vector<v8::Handle<v8::Value>> args);
+  void InitializeBindings(v8::Local<v8::Object> binding,
+                          v8::Local<v8::Context> context,
+                          bool is_main_frame);
+  // atom::RendererClientBase:
+  void DidCreateScriptContext(v8::Handle<v8::Context> context,
+                              content::RenderFrame* render_frame) override;
+  void WillReleaseScriptContext(v8::Handle<v8::Context> context,
+                                content::RenderFrame* render_frame) override;
+  void SetupMainWorldOverrides(v8::Handle<v8::Context> context,
+                               content::RenderFrame* render_frame) override;
+  void SetupExtensionWorldOverrides(v8::Handle<v8::Context> context,
+                                    content::RenderFrame* render_frame,
+                                    int world_id) override;
   // content::ContentRendererClient:
   void RenderFrameCreated(content::RenderFrame*) override;
   void RenderViewCreated(content::RenderView*) override;
+  void RunScriptsAtDocumentStart(content::RenderFrame* render_frame) override;
+  void RunScriptsAtDocumentEnd(content::RenderFrame* render_frame) override;
 
  private:
+  std::unique_ptr<base::ProcessMetrics> metrics_;
+
+  // Getting main script context from web frame would lazily initializes
+  // its script context. Doing so in a web page without scripts would trigger
+  // assertion, so we have to keep a book of injected web frames.
+  std::set<content::RenderFrame*> injected_frames_;
+
   DISALLOW_COPY_AND_ASSIGN(AtomSandboxedRendererClient);
 };
 

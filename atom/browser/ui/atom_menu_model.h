@@ -8,6 +8,7 @@
 #include <map>
 
 #include "base/observer_list.h"
+#include "base/observer_list_types.h"
 #include "ui/base/models/simple_menu_model.h"
 
 namespace atom {
@@ -16,32 +17,38 @@ class AtomMenuModel : public ui::SimpleMenuModel {
  public:
   class Delegate : public ui::SimpleMenuModel::Delegate {
    public:
-    virtual ~Delegate() {}
+    ~Delegate() override {}
 
     virtual bool GetAcceleratorForCommandIdWithParams(
         int command_id,
         bool use_default_accelerator,
         ui::Accelerator* accelerator) const = 0;
 
+    virtual bool ShouldRegisterAcceleratorForCommandId(
+        int command_id) const = 0;
+
+    virtual bool ShouldCommandIdWorkWhenHidden(int command_id) const = 0;
+
    private:
     // ui::SimpleMenuModel::Delegate:
-    bool GetAcceleratorForCommandId(int command_id,
-                                    ui::Accelerator* accelerator) {
-      return GetAcceleratorForCommandIdWithParams(
-          command_id, false, accelerator);
-    }
+    bool GetAcceleratorForCommandId(
+        int command_id,
+        ui::Accelerator* accelerator) const override;
   };
 
-  class Observer {
+  class Observer : public base::CheckedObserver {
    public:
-    virtual ~Observer() {}
+    ~Observer() override {}
+
+    // Notifies the menu will open.
+    virtual void OnMenuWillShow() {}
 
     // Notifies the menu has been closed.
-    virtual void MenuClosed() {}
+    virtual void OnMenuWillClose() {}
   };
 
   explicit AtomMenuModel(Delegate* delegate);
-  virtual ~AtomMenuModel();
+  ~AtomMenuModel() override;
 
   void AddObserver(Observer* obs) { observers_.AddObserver(obs); }
   void RemoveObserver(Observer* obs) { observers_.RemoveObserver(obs); }
@@ -51,9 +58,12 @@ class AtomMenuModel : public ui::SimpleMenuModel {
   bool GetAcceleratorAtWithParams(int index,
                                   bool use_default_accelerator,
                                   ui::Accelerator* accelerator) const;
+  bool ShouldRegisterAcceleratorAt(int index) const;
+  bool WorksWhenHiddenAt(int index) const;
 
   // ui::SimpleMenuModel:
-  void MenuClosed() override;
+  void MenuWillClose() override;
+  void MenuWillShow() override;
 
   using SimpleMenuModel::GetSubmenuModelAt;
   AtomMenuModel* GetSubmenuModelAt(int index);

@@ -11,7 +11,7 @@
 #include "atom/common/native_mate_converters/content_converter.h"
 #include "atom/common/native_mate_converters/gurl_converter.h"
 #include "atom/common/node_includes.h"
-#include "base/hash.h"
+#include "base/hash/hash.h"
 #include "native_mate/dictionary.h"
 #include "url/origin.h"
 #include "v8/include/v8-profiler.h"
@@ -22,7 +22,7 @@ namespace std {
 template <typename Type1, typename Type2>
 struct hash<std::pair<Type1, Type2>> {
   std::size_t operator()(std::pair<Type1, Type2> value) const {
-    return base::HashInts<Type1, Type2>(value.first, value.second);
+    return base::HashInts(base::Hash(value.first), value.second);
   }
 };
 
@@ -30,7 +30,7 @@ struct hash<std::pair<Type1, Type2>> {
 
 namespace mate {
 
-template<typename Type1, typename Type2>
+template <typename Type1, typename Type2>
 struct Converter<std::pair<Type1, Type2>> {
   static bool FromV8(v8::Isolate* isolate,
                      v8::Local<v8::Value> val,
@@ -41,8 +41,12 @@ struct Converter<std::pair<Type1, Type2>> {
     v8::Local<v8::Array> array(v8::Local<v8::Array>::Cast(val));
     if (array->Length() != 2)
       return false;
-    return Converter<Type1>::FromV8(isolate, array->Get(0), &out->first) &&
-           Converter<Type2>::FromV8(isolate, array->Get(1), &out->second);
+
+    auto context = isolate->GetCurrentContext();
+    return Converter<Type1>::FromV8(
+               isolate, array->Get(context, 0).ToLocalChecked(), &out->first) &&
+           Converter<Type2>::FromV8(
+               isolate, array->Get(context, 1).ToLocalChecked(), &out->second);
   }
 };
 
@@ -96,15 +100,17 @@ void TakeHeapSnapshot(v8::Isolate* isolate) {
 
 void RequestGarbageCollectionForTesting(v8::Isolate* isolate) {
   isolate->RequestGarbageCollectionForTesting(
-    v8::Isolate::GarbageCollectionType::kFullGarbageCollection);
+      v8::Isolate::GarbageCollectionType::kFullGarbageCollection);
 }
 
 bool IsSameOrigin(const GURL& l, const GURL& r) {
-  return url::Origin(l).IsSameOriginWith(url::Origin(r));
+  return url::Origin::Create(l).IsSameOriginWith(url::Origin::Create(r));
 }
 
-void Initialize(v8::Local<v8::Object> exports, v8::Local<v8::Value> unused,
-                v8::Local<v8::Context> context, void* priv) {
+void Initialize(v8::Local<v8::Object> exports,
+                v8::Local<v8::Value> unused,
+                v8::Local<v8::Context> context,
+                void* priv) {
   mate::Dictionary dict(context->GetIsolate(), exports);
   dict.SetMethod("getHiddenValue", &GetHiddenValue);
   dict.SetMethod("setHiddenValue", &SetHiddenValue);
@@ -113,9 +119,11 @@ void Initialize(v8::Local<v8::Object> exports, v8::Local<v8::Value> unused,
   dict.SetMethod("takeHeapSnapshot", &TakeHeapSnapshot);
   dict.SetMethod("setRemoteCallbackFreer", &atom::RemoteCallbackFreer::BindTo);
   dict.SetMethod("setRemoteObjectFreer", &atom::RemoteObjectFreer::BindTo);
+  dict.SetMethod("addRemoteObjectRef", &atom::RemoteObjectFreer::AddRef);
   dict.SetMethod("createIDWeakMap", &atom::api::KeyWeakMap<int32_t>::Create);
-  dict.SetMethod("createDoubleIDWeakMap",
-                 &atom::api::KeyWeakMap<std::pair<int64_t, int32_t>>::Create);
+  dict.SetMethod(
+      "createDoubleIDWeakMap",
+      &atom::api::KeyWeakMap<std::pair<std::string, int32_t>>::Create);
   dict.SetMethod("requestGarbageCollectionForTesting",
                  &RequestGarbageCollectionForTesting);
   dict.SetMethod("isSameOrigin", &IsSameOrigin);
@@ -123,4 +131,4 @@ void Initialize(v8::Local<v8::Object> exports, v8::Local<v8::Value> unused,
 
 }  // namespace
 
-NODE_MODULE_CONTEXT_AWARE_BUILTIN(atom_common_v8_util, Initialize)
+NODE_LINKED_MODULE_CONTEXT_AWARE(atom_common_v8_util, Initialize)

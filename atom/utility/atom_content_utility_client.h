@@ -5,21 +5,17 @@
 #ifndef ATOM_UTILITY_ATOM_CONTENT_UTILITY_CLIENT_H_
 #define ATOM_UTILITY_ATOM_CONTENT_UTILITY_CLIENT_H_
 
-#include <set>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "base/compiler_specific.h"
-#include "base/memory/scoped_vector.h"
 #include "content/public/utility/content_utility_client.h"
-#include "ipc/ipc_platform_file.h"
+#include "printing/buildflags/buildflags.h"
 
-namespace base {
-class FilePath;
-struct FileDescriptor;
-}
-
-class UtilityMessageHandler;
+#if BUILDFLAG(ENABLE_PRINTING) && defined(OS_WIN)
+#include "chrome/utility/printing_handler.h"
+#endif
 
 namespace atom {
 
@@ -30,23 +26,19 @@ class AtomContentUtilityClient : public content::ContentUtilityClient {
 
   void UtilityThreadStarted() override;
   bool OnMessageReceived(const IPC::Message& message) override;
-
-  static void set_max_ipc_message_size_for_test(int64_t max_message_size) {
-    max_ipc_message_size_ = max_message_size;
-  }
+  bool HandleServiceRequest(
+      const std::string& service_name,
+      service_manager::mojom::ServiceRequest request) override;
 
  private:
-  void OnStartupPing();
+  std::unique_ptr<service_manager::Service> MaybeCreateMainThreadService(
+      const std::string& service_name,
+      service_manager::mojom::ServiceRequest request);
+#if BUILDFLAG(ENABLE_PRINTING) && defined(OS_WIN)
+  std::unique_ptr<printing::PrintingHandler> printing_handler_;
+#endif
 
-  typedef ScopedVector<UtilityMessageHandler> Handlers;
-  Handlers handlers_;
-
-  // Flag to enable whitelisting.
-  bool filter_messages_;
-  // A list of message_ids to filter.
-  std::set<int> message_id_whitelist_;
-  // Maximum IPC msg size (default to kMaximumMessageSize; override for testing)
-  static int64_t max_ipc_message_size_;
+  bool elevated_;
 
   DISALLOW_COPY_AND_ASSIGN(AtomContentUtilityClient);
 };

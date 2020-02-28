@@ -5,8 +5,10 @@
 #ifndef ATOM_BROWSER_ATOM_BLOB_READER_H_
 #define ATOM_BROWSER_ATOM_BLOB_READER_H_
 
+#include <memory>
 #include <string>
 
+#include "atom/common/promise_util.h"
 #include "base/callback.h"
 
 namespace content {
@@ -20,14 +22,13 @@ class IOBuffer;
 namespace storage {
 class BlobDataHandle;
 class BlobReader;
-class FileSystemContext;
-}
+}  // namespace storage
 
 namespace v8 {
 template <class T>
 class Local;
 class Value;
-}
+}  // namespace v8
 
 namespace atom {
 
@@ -35,25 +36,20 @@ namespace atom {
 // except Ctor are expected to be called on IO thread.
 class AtomBlobReader {
  public:
-  using CompletionCallback = base::Callback<void(v8::Local<v8::Value>)>;
-
-  AtomBlobReader(content::ChromeBlobStorageContext* blob_context,
-                 storage::FileSystemContext* file_system_context);
+  explicit AtomBlobReader(content::ChromeBlobStorageContext* blob_context);
   ~AtomBlobReader();
 
-  void StartReading(
-      const std::string& uuid,
-      const AtomBlobReader::CompletionCallback& callback);
+  void StartReading(const std::string& uuid, atom::util::Promise promise);
 
  private:
   // A self-destroyed helper class to read the blob data.
   // Must be accessed on IO thread.
   class BlobReadHelper {
    public:
-    using CompletionCallback = base::Callback<void(char*, int)>;
+    using CompletionCallback = base::OnceCallback<void(char*, int)>;
 
     BlobReadHelper(std::unique_ptr<storage::BlobReader> blob_reader,
-                   const BlobReadHelper::CompletionCallback& callback);
+                   BlobReadHelper::CompletionCallback callback);
     ~BlobReadHelper();
 
     void Read();
@@ -70,7 +66,6 @@ class AtomBlobReader {
   };
 
   scoped_refptr<content::ChromeBlobStorageContext> blob_context_;
-  scoped_refptr<storage::FileSystemContext> file_system_context_;
 
   DISALLOW_COPY_AND_ASSIGN(AtomBlobReader);
 };

@@ -6,26 +6,29 @@
 
 #include <string>
 
-#include "content/public/browser/browser_thread.h"
-#include "native_mate/dictionary.h"
-
 #include "atom/common/node_includes.h"
+#include "base/task/post_task.h"
+#include "base/threading/thread_task_runner_handle.h"
+#include "content/public/common/service_manager_connection.h"
+#include "native_mate/dictionary.h"
+#include "services/device/public/mojom/constants.mojom.h"
+#include "services/device/public/mojom/wake_lock_provider.mojom.h"
+#include "services/service_manager/public/cpp/connector.h"
 
 namespace mate {
 
-template<>
-struct Converter<device::PowerSaveBlocker::PowerSaveBlockerType> {
+template <>
+struct Converter<device::mojom::WakeLockType> {
   static bool FromV8(v8::Isolate* isolate,
                      v8::Local<v8::Value> val,
-                     device::PowerSaveBlocker::PowerSaveBlockerType* out) {
-    using device::PowerSaveBlocker;
+                     device::mojom::WakeLockType* out) {
     std::string type;
     if (!ConvertFromV8(isolate, val, &type))
       return false;
     if (type == "prevent-app-suspension")
-      *out = PowerSaveBlocker::kPowerSaveBlockPreventAppSuspension;
+      *out = device::mojom::WakeLockType::kPreventAppSuspension;
     else if (type == "prevent-display-sleep")
-      *out = PowerSaveBlocker::kPowerSaveBlockPreventDisplaySleep;
+      *out = device::mojom::WakeLockType::kPreventDisplaySleep;
     else
       return false;
     return true;
@@ -39,68 +42,79 @@ namespace atom {
 namespace api {
 
 PowerSaveBlocker::PowerSaveBlocker(v8::Isolate* isolate)
-    : current_blocker_type_(
-          device::PowerSaveBlocker::kPowerSaveBlockPreventAppSuspension) {
+    : current_lock_type_(device::mojom::WakeLockType::kPreventAppSuspension),
+      is_wake_lock_active_(false) {
   Init(isolate);
 }
 
-PowerSaveBlocker::~PowerSaveBlocker() {
-}
+PowerSaveBlocker::~PowerSaveBlocker() {}
 
 void PowerSaveBlocker::UpdatePowerSaveBlocker() {
-  if (power_save_blocker_types_.empty()) {
-    power_save_blocker_.reset();
+  if (wake_lock_types_.empty()) {
+    if (is_wake_lock_active_) {
+      GetWakeLock()->CancelWakeLock();
+      is_wake_lock_active_ = false;
+    }
     return;
   }
 
-  // |kPowerSaveBlockPreventAppSuspension| keeps system active, but allows
+  // |WakeLockType::kPreventAppSuspension| keeps system active, but allows
   // screen to be turned off.
-  // |kPowerSaveBlockPreventDisplaySleep| keeps system and screen active, has a
-  // higher precedence level than |kPowerSaveBlockPreventAppSuspension|.
+  // |WakeLockType::kPreventDisplaySleep| keeps system and screen active, has a
+  // higher precedence level than |WakeLockType::kPreventAppSuspension|.
   //
   // Only the highest-precedence blocker type takes effect.
-  device::PowerSaveBlocker::PowerSaveBlockerType new_blocker_type =
-      device::PowerSaveBlocker::kPowerSaveBlockPreventAppSuspension;
-  for (const auto& element : power_save_blocker_types_) {
-    if (element.second ==
-        device::PowerSaveBlocker::kPowerSaveBlockPreventDisplaySleep) {
-      new_blocker_type =
-          device::PowerSaveBlocker::kPowerSaveBlockPreventDisplaySleep;
+  device::mojom::WakeLockType new_lock_type =
+      device::mojom::WakeLockType::kPreventAppSuspension;
+  for (const auto& element : wake_lock_types_) {
+    if (element.second == device::mojom::WakeLockType::kPreventDisplaySleep) {
+      new_lock_type = device::mojom::WakeLockType::kPreventDisplaySleep;
       break;
     }
   }
 
-  if (!power_save_blocker_ || new_blocker_type != current_blocker_type_) {
-    std::unique_ptr<device::PowerSaveBlocker> new_blocker(
-        new device::PowerSaveBlocker(
-            new_blocker_type,
-            device::PowerSaveBlocker::kReasonOther,
-            ATOM_PRODUCT_NAME,
-            content::BrowserThread::GetMessageLoopProxyForThread(
-                content::BrowserThread::UI),
-            content::BrowserThread::GetMessageLoopProxyForThread(
-                content::BrowserThread::FILE)));
-    power_save_blocker_.swap(new_blocker);
-    current_blocker_type_ = new_blocker_type;
+  if (current_lock_type_ != new_lock_type) {
+    GetWakeLock()->ChangeType(new_lock_type, base::DoNothing());
+    current_lock_type_ = new_lock_type;
+  }
+  if (!is_wake_lock_active_) {
+    GetWakeLock()->RequestWakeLock();
+    is_wake_lock_active_ = true;
   }
 }
 
-int PowerSaveBlocker::Start(
-    device::PowerSaveBlocker::PowerSaveBlockerType type) {
+device::mojom::WakeLock* PowerSaveBlocker::GetWakeLock() {
+  if (!wake_lock_) {
+    device::mojom::WakeLockProviderPtr wake_lock_provider;
+    DCHECK(content::ServiceManagerConnection::GetForProcess());
+    auto* connector =
+        content::ServiceManagerConnection::GetForProcess()->GetConnector();
+    connector->BindInterface(device::mojom::kServiceName,
+                             mojo::MakeRequest(&wake_lock_provider));
+
+    wake_lock_provider->GetWakeLockWithoutContext(
+        device::mojom::WakeLockType::kPreventAppSuspension,
+        device::mojom::WakeLockReason::kOther, ATOM_PRODUCT_NAME,
+        mojo::MakeRequest(&wake_lock_));
+  }
+  return wake_lock_.get();
+}
+
+int PowerSaveBlocker::Start(device::mojom::WakeLockType type) {
   static int count = 0;
-  power_save_blocker_types_[count] = type;
+  wake_lock_types_[count] = type;
   UpdatePowerSaveBlocker();
   return count++;
 }
 
 bool PowerSaveBlocker::Stop(int id) {
-  bool success = power_save_blocker_types_.erase(id) > 0;
+  bool success = wake_lock_types_.erase(id) > 0;
   UpdatePowerSaveBlocker();
   return success;
 }
 
 bool PowerSaveBlocker::IsStarted(int id) {
-  return power_save_blocker_types_.find(id) != power_save_blocker_types_.end();
+  return wake_lock_types_.find(id) != wake_lock_types_.end();
 }
 
 // static
@@ -110,7 +124,8 @@ mate::Handle<PowerSaveBlocker> PowerSaveBlocker::Create(v8::Isolate* isolate) {
 
 // static
 void PowerSaveBlocker::BuildPrototype(
-    v8::Isolate* isolate, v8::Local<v8::FunctionTemplate> prototype) {
+    v8::Isolate* isolate,
+    v8::Local<v8::FunctionTemplate> prototype) {
   prototype->SetClassName(mate::StringToV8(isolate, "PowerSaveBlocker"));
   mate::ObjectTemplateBuilder(isolate, prototype->PrototypeTemplate())
       .SetMethod("start", &PowerSaveBlocker::Start)
@@ -124,8 +139,10 @@ void PowerSaveBlocker::BuildPrototype(
 
 namespace {
 
-void Initialize(v8::Local<v8::Object> exports, v8::Local<v8::Value> unused,
-                v8::Local<v8::Context> context, void* priv) {
+void Initialize(v8::Local<v8::Object> exports,
+                v8::Local<v8::Value> unused,
+                v8::Local<v8::Context> context,
+                void* priv) {
   v8::Isolate* isolate = context->GetIsolate();
   mate::Dictionary dict(isolate, exports);
   dict.Set("powerSaveBlocker", atom::api::PowerSaveBlocker::Create(isolate));
@@ -133,4 +150,4 @@ void Initialize(v8::Local<v8::Object> exports, v8::Local<v8::Value> unused,
 
 }  // namespace
 
-NODE_MODULE_CONTEXT_AWARE_BUILTIN(atom_browser_power_save_blocker, Initialize);
+NODE_LINKED_MODULE_CONTEXT_AWARE(atom_browser_power_save_blocker, Initialize)

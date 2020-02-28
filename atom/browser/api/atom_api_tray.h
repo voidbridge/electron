@@ -21,7 +21,7 @@ class Image;
 namespace mate {
 class Arguments;
 class Dictionary;
-}
+}  // namespace mate
 
 namespace atom {
 
@@ -32,8 +32,7 @@ namespace api {
 class Menu;
 class NativeImage;
 
-class Tray : public mate::TrackableObject<Tray>,
-             public TrayIconObserver {
+class Tray : public mate::TrackableObject<Tray>, public TrayIconObserver {
  public:
   static mate::WrappableBase* New(mate::Handle<NativeImage> image,
                                   mate::Arguments* args);
@@ -42,12 +41,15 @@ class Tray : public mate::TrackableObject<Tray>,
                              v8::Local<v8::FunctionTemplate> prototype);
 
  protected:
-  Tray(v8::Isolate* isolate, v8::Local<v8::Object> wrapper,
+  Tray(v8::Isolate* isolate,
+       v8::Local<v8::Object> wrapper,
        mate::Handle<NativeImage> image);
   ~Tray() override;
 
   // TrayIconObserver:
-  void OnClicked(const gfx::Rect& bounds, int modifiers) override;
+  void OnClicked(const gfx::Rect& bounds,
+                 const gfx::Point& location,
+                 int modifiers) override;
   void OnDoubleClicked(const gfx::Rect& bounds, int modifiers) override;
   void OnRightClicked(const gfx::Rect& bounds, int modifiers) override;
   void OnBalloonShow() override;
@@ -59,12 +61,18 @@ class Tray : public mate::TrackableObject<Tray>,
   void OnDragEntered() override;
   void OnDragExited() override;
   void OnDragEnded() override;
+  void OnMouseEntered(const gfx::Point& location, int modifiers) override;
+  void OnMouseExited(const gfx::Point& location, int modifiers) override;
+  void OnMouseMoved(const gfx::Point& location, int modifiers) override;
 
   void SetImage(v8::Isolate* isolate, mate::Handle<NativeImage> image);
   void SetPressedImage(v8::Isolate* isolate, mate::Handle<NativeImage> image);
   void SetToolTip(const std::string& tool_tip);
   void SetTitle(const std::string& title);
+  std::string GetTitle();
   void SetHighlightMode(TrayIcon::HighlightMode mode);
+  void SetIgnoreDoubleClickEvents(bool ignore);
+  bool GetIgnoreDoubleClickEvents();
   void DisplayBalloon(mate::Arguments* args, const mate::Dictionary& options);
   void PopUpContextMenu(mate::Arguments* args);
   void SetContextMenu(v8::Isolate* isolate, mate::Handle<Menu> menu);
